@@ -7,10 +7,13 @@ import os
 import sys
 import logging
 import importlib
+import heapq
 from types import ModuleType
 from typing import TYPE_CHECKING
 
 import numpy as np
+from scipy.ndimage import gaussian_filter
+import pyqtgraph as pg
 
 import pyqtgraph.opengl as gl
 if TYPE_CHECKING:
@@ -36,6 +39,21 @@ class SurfacePlotter(QtWidgets.QFrame):
         self._logger = logging.getLogger(self.__class__.__name__)
         self._module: ModuleType | None = None
 
+        self._missionPathItem: gl.GLLinePlotItem | None = None
+        self._waypointItem: gl.GLScatterPlotItem | None = None
+        self._roverItem: gl.GLMeshItem | None = None
+        self._plannedPath: np.ndarray | None = None
+        self._roverPathCursor = 0
+        self._missionTimer = QtCore.QTimer(self)
+        self._missionTimer.timeout.connect(self._advanceRover)
+        self._missionHazardMap: np.ndarray | None = None
+        self._waypointsInitialized = False
+        self._startWaypoint: tuple[float, float] | None = None
+        self._endWaypoint: tuple[float, float] | None = None
+        self._nextPickTarget = 'start'
+        self._mapImageItem: pg.ImageItem | None = None
+        self._mapWaypointScatter: pg.ScatterPlotItem | None = None
+
         self.vw = gl.GLViewWidget(self)
 
         self.grid = gl.GLGridItem()
@@ -55,6 +73,10 @@ class SurfacePlotter(QtWidgets.QFrame):
             shader='shaded'
         )
         self.vw.addItem(self.surf)
+
+        self._tabs = QtWidgets.QTabWidget(self)
+        self._tabs.setMinimumWidth(280)
+        self._setupMissionPlannerTab()
 
         self.setAcceptDrops(True)
 
@@ -93,12 +115,449 @@ class SurfacePlotter(QtWidgets.QFrame):
         self.setContextMenuPolicy(
             QtCore.Qt.ContextMenuPolicy.ActionsContextMenu)
 
-        self.setLayout(QtWidgets.QVBoxLayout())
-        self.layout().addWidget(self.vw)
+        self.setLayout(QtWidgets.QHBoxLayout())
+        self.layout().addWidget(self.vw, 1)
+        self.layout().addWidget(self._tabs)
         self.layout().setContentsMargins(*4*[0])
 
         # error message
         self._err_message = QtWidgets.QErrorMessage(self)
+        self._onSurfaceChanged()
+
+    def _setupMissionPlannerTab(self):
+        planner_tab = QtWidgets.QWidget(self)
+        planner_layout = QtWidgets.QVBoxLayout(planner_tab)
+
+        self._mapPlot = pg.PlotWidget(planner_tab)
+        self._mapPlot.setMinimumHeight(260)
+        self._mapPlot.setAspectLocked(True)
+        self._mapPlot.showGrid(x=True, y=True, alpha=0.2)
+        self._mapPlot.setLabel('bottom', 'X', units='m')
+        self._mapPlot.setLabel('left', 'Y', units='m')
+        self._mapPlot.setMenuEnabled(False)
+        self._mapPlot.scene().sigMouseClicked.connect(self._onPlannerMapClicked)
+        planner_layout.addWidget(self._mapPlot)
+
+        self._startCoordLabel = QtWidgets.QLabel('Start: not selected', planner_tab)
+        self._endCoordLabel = QtWidgets.QLabel('End: not selected', planner_tab)
+        planner_layout.addWidget(self._startCoordLabel)
+        planner_layout.addWidget(self._endCoordLabel)
+
+        pick_row = QtWidgets.QHBoxLayout()
+        self._pickStartButton = QtWidgets.QPushButton('Pick Start', planner_tab)
+        self._pickStartButton.clicked.connect(self._activateStartPick)
+        self._pickEndButton = QtWidgets.QPushButton('Pick End', planner_tab)
+        self._pickEndButton.clicked.connect(self._activateEndPick)
+        pick_row.addWidget(self._pickStartButton)
+        pick_row.addWidget(self._pickEndButton)
+        planner_layout.addLayout(pick_row)
+
+        self._avoidanceSpin = QtWidgets.QDoubleSpinBox(planner_tab)
+        self._avoidanceSpin.setDecimals(2)
+        self._avoidanceSpin.setRange(0.0, 5.0)
+        self._avoidanceSpin.setSingleStep(0.1)
+        self._avoidanceSpin.setValue(1.8)
+
+        self._slopeSpin = QtWidgets.QDoubleSpinBox(planner_tab)
+        self._slopeSpin.setDecimals(2)
+        self._slopeSpin.setRange(0.0, 5.0)
+        self._slopeSpin.setSingleStep(0.1)
+        self._slopeSpin.setValue(1.6)
+
+        self._roverSpeedSpin = QtWidgets.QSpinBox(planner_tab)
+        self._roverSpeedSpin.setRange(1, 15)
+        self._roverSpeedSpin.setValue(3)
+
+        form = QtWidgets.QFormLayout()
+        form.addRow('Crater Avoid', self._avoidanceSpin)
+        form.addRow('Slope Avoid', self._slopeSpin)
+        form.addRow('Rover Speed', self._roverSpeedSpin)
+        planner_layout.addLayout(form)
+
+        button_row = QtWidgets.QHBoxLayout()
+        self._clearWaypointsButton = QtWidgets.QPushButton('Clear Points', planner_tab)
+        self._clearWaypointsButton.clicked.connect(self._clearWaypoints)
+        self._swapWaypointsButton = QtWidgets.QPushButton('Swap', planner_tab)
+        self._swapWaypointsButton.clicked.connect(self._swapWaypoints)
+        self._planMissionButton = QtWidgets.QPushButton('Plan Path', planner_tab)
+        self._planMissionButton.clicked.connect(self.planMissionPath)
+        button_row.addWidget(self._clearWaypointsButton)
+        button_row.addWidget(self._swapWaypointsButton)
+        button_row.addWidget(self._planMissionButton)
+        planner_layout.addLayout(button_row)
+
+        mission_row = QtWidgets.QHBoxLayout()
+        self._startMissionButton = QtWidgets.QPushButton('Start Rover', planner_tab)
+        self._startMissionButton.clicked.connect(self.startRoverMission)
+        self._stopMissionButton = QtWidgets.QPushButton('Stop', planner_tab)
+        self._stopMissionButton.clicked.connect(self.stopRoverMission)
+        mission_row.addWidget(self._startMissionButton)
+        mission_row.addWidget(self._stopMissionButton)
+        planner_layout.addLayout(mission_row)
+
+        self._missionStatusLabel = QtWidgets.QLabel(
+            'Pick Start and End directly on the map, then click Plan Path.',
+            planner_tab
+        )
+        self._missionStatusLabel.setWordWrap(True)
+        planner_layout.addWidget(self._missionStatusLabel)
+        planner_layout.addStretch(1)
+
+        self._tabs.addTab(planner_tab, 'Mission Planner')
+
+    def _setMissionStatus(self, text: str):
+        self._missionStatusLabel.setText(text)
+
+    def _activateStartPick(self):
+        self._nextPickTarget = 'start'
+        self._setMissionStatus('Click on map to choose START waypoint.')
+
+    def _activateEndPick(self):
+        self._nextPickTarget = 'end'
+        self._setMissionStatus('Click on map to choose END waypoint.')
+
+    def _clearWaypoints(self):
+        self.stopRoverMission()
+        self._startWaypoint = None
+        self._endWaypoint = None
+        self._plannedPath = None
+        self._roverPathCursor = 0
+        self._nextPickTarget = 'start'
+        self._refreshWaypointLabels()
+        self._refreshMapWaypointOverlay()
+
+        if self._missionPathItem is not None:
+            self.vw.removeItem(self._missionPathItem)
+            self._missionPathItem = None
+        if self._waypointItem is not None:
+            self.vw.removeItem(self._waypointItem)
+            self._waypointItem = None
+        if self._roverItem is not None:
+            self.vw.removeItem(self._roverItem)
+            self._roverItem = None
+
+        self._setMissionStatus('Waypoints cleared. Pick START then END on map.')
+
+    def _refreshWaypointLabels(self):
+        if self._startWaypoint is None:
+            self._startCoordLabel.setText('Start: not selected')
+        else:
+            self._startCoordLabel.setText(
+                f'Start: x={self._startWaypoint[0]:.2f}, y={self._startWaypoint[1]:.2f}'
+            )
+
+        if self._endWaypoint is None:
+            self._endCoordLabel.setText('End: not selected')
+        else:
+            self._endCoordLabel.setText(
+                f'End: x={self._endWaypoint[0]:.2f}, y={self._endWaypoint[1]:.2f}'
+            )
+
+    def _refreshMapWaypointOverlay(self):
+        if self._mapWaypointScatter is None:
+            self._mapWaypointScatter = pg.ScatterPlotItem(size=12)
+            self._mapPlot.addItem(self._mapWaypointScatter)
+
+        points = []
+        if self._startWaypoint is not None:
+            points.append({
+                'pos': self._startWaypoint,
+                'brush': pg.mkBrush(40, 220, 60, 220),
+                'pen': pg.mkPen(20, 80, 20, 255),
+                'symbol': 'o',
+                'size': 12
+            })
+        if self._endWaypoint is not None:
+            points.append({
+                'pos': self._endWaypoint,
+                'brush': pg.mkBrush(235, 80, 70, 220),
+                'pen': pg.mkPen(100, 20, 20, 255),
+                'symbol': 't',
+                'size': 12
+            })
+        self._mapWaypointScatter.setData(points)
+
+    def _onPlannerMapClicked(self, ev):
+        if ev.button() != QtCore.Qt.MouseButton.LeftButton:
+            return
+
+        view_box = self._mapPlot.getViewBox()
+        if view_box is None:
+            return
+
+        point = view_box.mapSceneToView(ev.scenePos())
+        x, y, z, *c = self._surfaceData
+        x_val = float(np.clip(point.x(), x.min(), x.max()))
+        y_val = float(np.clip(point.y(), y.min(), y.max()))
+
+        if self._nextPickTarget == 'start':
+            self._startWaypoint = (x_val, y_val)
+            self._nextPickTarget = 'end'
+            self._setMissionStatus('Start selected. Click to choose END waypoint.')
+        else:
+            self._endWaypoint = (x_val, y_val)
+            self._nextPickTarget = 'start'
+            self._setMissionStatus('End selected. Click Plan Path to generate route.')
+
+        self._refreshWaypointLabels()
+        self._refreshMapWaypointOverlay()
+
+    def _updateWaypointRanges(self):
+        x, y, z, *c = self._surfaceData
+        x_min, x_max = float(x.min()), float(x.max())
+        y_min, y_max = float(y.min()), float(y.max())
+
+        if self._mapImageItem is None:
+            self._mapImageItem = pg.ImageItem(axisOrder='row-major')
+            self._mapPlot.addItem(self._mapImageItem)
+
+        z_view = np.asarray(z.T, dtype=float)
+        self._mapImageItem.setImage(z_view, autoLevels=True)
+        self._mapImageItem.setRect(QtCore.QRectF(x_min, y_min, np.ptp(x), np.ptp(y)))
+
+        self._mapPlot.setXRange(x_min, x_max, padding=0.02)
+        self._mapPlot.setYRange(y_min, y_max, padding=0.02)
+
+        if self._startWaypoint is not None:
+            self._startWaypoint = (
+                float(np.clip(self._startWaypoint[0], x_min, x_max)),
+                float(np.clip(self._startWaypoint[1], y_min, y_max)),
+            )
+        if self._endWaypoint is not None:
+            self._endWaypoint = (
+                float(np.clip(self._endWaypoint[0], x_min, x_max)),
+                float(np.clip(self._endWaypoint[1], y_min, y_max)),
+            )
+
+        self._refreshWaypointLabels()
+        self._refreshMapWaypointOverlay()
+
+        self._missionHazardMap = self._buildHazardMap(z)
+
+    def _clearMissionGraphics(self):
+        self.stopRoverMission()
+
+        if self._missionPathItem is not None:
+            self.vw.removeItem(self._missionPathItem)
+            self._missionPathItem = None
+
+        if self._waypointItem is not None:
+            self.vw.removeItem(self._waypointItem)
+            self._waypointItem = None
+
+        if self._roverItem is not None:
+            self.vw.removeItem(self._roverItem)
+            self._roverItem = None
+
+        self._plannedPath = None
+        self._roverPathCursor = 0
+
+    def _onSurfaceChanged(self):
+        self._clearMissionGraphics()
+        self._updateWaypointRanges()
+        self._setMissionStatus('Surface ready. Define two waypoints and plan mission.')
+
+    def _swapWaypoints(self):
+        self._startWaypoint, self._endWaypoint = self._endWaypoint, self._startWaypoint
+        self._refreshWaypointLabels()
+        self._refreshMapWaypointOverlay()
+
+    def _xyToGridIndex(self, x_value: float, y_value: float) -> tuple[int, int]:
+        x, y, z, *c = self._surfaceData
+        i = int(np.abs(x - x_value).argmin())
+        j = int(np.abs(y - y_value).argmin())
+        return i, j
+
+    def _gridIndexToPoint(self, i: int, j: int) -> np.ndarray:
+        x, y, z, *c = self._surfaceData
+        z_offset = 0.02 * max(np.ptp(z), 1e-3)
+        return np.array([x[i], y[j], z[i, j] + z_offset], dtype=float)
+
+    def _buildHazardMap(self, z: np.ndarray) -> np.ndarray:
+        dzdx, dzdy = np.gradient(z)
+        slope = np.hypot(dzdx, dzdy)
+        slope_scale = np.percentile(slope, 95) + 1e-9
+        slope_norm = np.clip(slope / slope_scale, 0.0, 4.0)
+
+        local_mean = gaussian_filter(z, sigma=2.2)
+        pit_depth = np.clip(local_mean - z, 0.0, None)
+        pit_scale = np.percentile(pit_depth, 95) + 1e-9
+        pit_norm = np.clip(pit_depth / pit_scale, 0.0, 4.0)
+
+        slope_weight = self._slopeSpin.value()
+        crater_weight = self._avoidanceSpin.value()
+
+        return 1.0 + slope_weight * slope_norm + crater_weight * pit_norm
+
+    def _aStarPath(
+        self,
+        start_idx: tuple[int, int],
+        end_idx: tuple[int, int],
+    ) -> list[tuple[int, int]] | None:
+        x, y, z, *c = self._surfaceData
+        nx, ny = z.shape
+
+        hazard = self._missionHazardMap
+        if hazard is None or hazard.shape != z.shape:
+            hazard = self._buildHazardMap(z)
+            self._missionHazardMap = hazard
+
+        neighbors = [
+            (-1, 0), (1, 0), (0, -1), (0, 1),
+            (-1, -1), (-1, 1), (1, -1), (1, 1)
+        ]
+
+        def heuristic(a: tuple[int, int], b: tuple[int, int]) -> float:
+            di = a[0] - b[0]
+            dj = a[1] - b[1]
+            return float(np.hypot(di, dj))
+
+        frontier: list[tuple[float, tuple[int, int]]] = []
+        heapq.heappush(frontier, (0.0, start_idx))
+
+        came_from: dict[tuple[int, int], tuple[int, int] | None] = {start_idx: None}
+        cost_so_far: dict[tuple[int, int], float] = {start_idx: 0.0}
+
+        max_expansions = min(nx * ny, 600_000)
+        expansions = 0
+
+        while frontier and expansions < max_expansions:
+            _, current = heapq.heappop(frontier)
+            expansions += 1
+
+            if current == end_idx:
+                break
+
+            ci, cj = current
+            for di, dj in neighbors:
+                ni, nj = ci + di, cj + dj
+                if ni < 0 or nj < 0 or ni >= nx or nj >= ny:
+                    continue
+
+                step_len = float(np.hypot(di, dj))
+                avg_hazard = 0.5 * (hazard[ci, cj] + hazard[ni, nj])
+                new_cost = cost_so_far[current] + step_len * avg_hazard
+                nxt = (ni, nj)
+
+                if nxt not in cost_so_far or new_cost < cost_so_far[nxt]:
+                    cost_so_far[nxt] = new_cost
+                    priority = new_cost + heuristic(nxt, end_idx)
+                    heapq.heappush(frontier, (priority, nxt))
+                    came_from[nxt] = current
+
+        if end_idx not in came_from:
+            return None
+
+        path: list[tuple[int, int]] = []
+        node: tuple[int, int] | None = end_idx
+        while node is not None:
+            path.append(node)
+            node = came_from[node]
+
+        path.reverse()
+        return path
+
+    def _setRoverPosition(self, point: np.ndarray):
+        if self._roverItem is None:
+            x, y, z, *c = self._surfaceData
+            radius = 0.01 * max(np.ptp(x), np.ptp(y))
+            mesh = gl.MeshData.sphere(rows=10, cols=16, radius=radius)
+            self._roverItem = gl.GLMeshItem(
+                meshdata=mesh,
+                smooth=True,
+                color=(0.05, 0.85, 1.0, 0.95),
+                shader='shaded',
+                glOptions='opaque'
+            )
+            self.vw.addItem(self._roverItem)
+
+        self._roverItem.resetTransform()
+        self._roverItem.translate(float(point[0]), float(point[1]), float(point[2]))
+
+    def planMissionPath(self):
+        if self._startWaypoint is None or self._endWaypoint is None:
+            self._setMissionStatus('Pick both START and END waypoint on map first.')
+            return
+
+        start_idx = self._xyToGridIndex(self._startWaypoint[0], self._startWaypoint[1])
+        end_idx = self._xyToGridIndex(self._endWaypoint[0], self._endWaypoint[1])
+
+        if start_idx == end_idx:
+            self._setMissionStatus('Start and end waypoint are the same.')
+            return
+
+        path_idx = self._aStarPath(start_idx, end_idx)
+        if path_idx is None or len(path_idx) < 2:
+            self._setMissionStatus('No safe path found. Increase map size or lower avoid weights.')
+            return
+
+        path_points = np.vstack([self._gridIndexToPoint(i, j) for i, j in path_idx])
+        self._plannedPath = path_points
+        self._roverPathCursor = 0
+
+        if self._missionPathItem is not None:
+            self.vw.removeItem(self._missionPathItem)
+        self._missionPathItem = gl.GLLinePlotItem(
+            pos=path_points,
+            color=(1.0, 0.85, 0.2, 1.0),
+            width=2.0,
+            antialias=True,
+            mode='line_strip'
+        )
+        self.vw.addItem(self._missionPathItem)
+
+        if self._waypointItem is not None:
+            self.vw.removeItem(self._waypointItem)
+        waypoint_points = np.vstack([path_points[0], path_points[-1]])
+        self._waypointItem = gl.GLScatterPlotItem(
+            pos=waypoint_points,
+            color=np.array([
+                [0.1, 1.0, 0.2, 1.0],
+                [1.0, 0.2, 0.2, 1.0]
+            ]),
+            size=12,
+            pxMode=True
+        )
+        self.vw.addItem(self._waypointItem)
+
+        self._setRoverPosition(path_points[0])
+
+        path_length = float(np.sum(np.linalg.norm(np.diff(path_points, axis=0), axis=1)))
+        self._setMissionStatus(
+            f'Planned path: {len(path_points)} nodes, {path_length:.2f} m. '
+            'Click Start Rover.'
+        )
+
+    def startRoverMission(self):
+        if self._plannedPath is None or len(self._plannedPath) < 2:
+            self.planMissionPath()
+
+        if self._plannedPath is None or len(self._plannedPath) < 2:
+            return
+
+        self._missionTimer.start(35)
+        self._setMissionStatus('Rover moving autonomously between waypoints.')
+
+    def stopRoverMission(self):
+        if self._missionTimer.isActive():
+            self._missionTimer.stop()
+
+    def _advanceRover(self):
+        if self._plannedPath is None or len(self._plannedPath) == 0:
+            self.stopRoverMission()
+            return
+
+        speed = max(1, int(self._roverSpeedSpin.value()))
+        self._roverPathCursor = min(
+            self._roverPathCursor + speed,
+            len(self._plannedPath) - 1
+        )
+
+        self._setRoverPosition(self._plannedPath[self._roverPathCursor])
+
+        if self._roverPathCursor >= len(self._plannedPath) - 1:
+            self.stopRoverMission()
+            self._setMissionStatus('Mission complete: rover reached end waypoint.')
 
     def minimumSizeHint(self) -> QtCore.QSize:
         return QtCore.QSize(100, 100)
@@ -212,6 +671,7 @@ class SurfacePlotter(QtWidgets.QFrame):
                 self.setToolTip(surface_func.__doc__)
             else:
                 self.setToolTip('')
+            self._onSurfaceChanged()
         except Exception as e:
             ermsg = f"failed to plot surface from module ({e})"
             self._err_message.showMessage(ermsg, 'error')
@@ -300,6 +760,7 @@ class SurfacePlotter(QtWidgets.QFrame):
             self._module = None
 
             self.setToolTip(os.path.basename(filename))
+            self._onSurfaceChanged()
 
         except Exception as e:
             ermsg = f"failed to load heightmap image ({e})"
@@ -345,6 +806,7 @@ class SurfacePlotter(QtWidgets.QFrame):
         self._surfaceData = self._module.surface()
         x, y, z = self._surfaceData
         self.surf.setData(x=x, y=y, z=z)
+        self._onSurfaceChanged()
 
     def reloadSurfaceImage(self):
         x, y, z, *c = self._surfaceData
@@ -375,6 +837,7 @@ class SurfacePlotter(QtWidgets.QFrame):
         self._surfaceData = x, y, z
         x, y, z = self._surfaceData
         self.surf.setData(x=x, y=y, z=z)
+        self._onSurfaceChanged()
 
     def exportSurface(self, *, filename: str | None = None):
         '''export a surface to a PNG or TIFF heightmap file'''
