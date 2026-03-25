@@ -26,12 +26,25 @@ python -m moon_gen
 By default, the GUI loads the bundled TIFF DEM at `img/default_moon_dem.tif`,
 so a fresh clone starts with the same TIFF-based view.
 
+For weaker laptops, you can cap preview resolution (while still loading large
+input TIFF files) with an environment variable:
+```powershell
+$env:MOON_GEN_MAX_HEIGHTMAP_DIMENSION=512; python -m moon_gen
+```
+```bash
+MOON_GEN_MAX_HEIGHTMAP_DIMENSION=512 python -m moon_gen
+```
+
 If you have a large external DEM (for example
 `Lunar_LRO_LOLA_Global_LDEM_118m_Mar2014.tif`), place it in the project root
 and pass it explicitly:
 ```bash
 python -m moon_gen Lunar_LRO_LOLA_Global_LDEM_118m_Mar2014.tif
 ```
+
+Use `Ctrl+S` in the viewer to export as either:
+- 16-bit TIFF (`.tif`, preferred for DEM quality)
+- 8-bit PNG (`.png`, smaller files)
 
 
 ## TODOs

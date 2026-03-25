@@ -23,7 +23,13 @@ from moon_gen.lib.utils import SurfaceFunctionType, SurfaceType
 
 class SurfacePlotter(QtWidgets.QFrame):
 
-    _MAX_HEIGHTMAP_DIMENSION = 512
+    _MAX_HEIGHTMAP_DIMENSION = max(
+        64,
+        int(os.environ.get('MOON_GEN_MAX_HEIGHTMAP_DIMENSION', '768'))
+    )
+    _HEIGHTMAP_CLIP_LOW_PERCENTILE = 1.0
+    _HEIGHTMAP_CLIP_HIGH_PERCENTILE = 99.0
+    _HEIGHTMAP_GAMMA = 0.9
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -129,6 +135,46 @@ class SurfacePlotter(QtWidgets.QFrame):
         filename = a0.mimeData().text().removeprefix('file:///')
         self.plotSurfaceFromFile(filename)
 
+    def _downsample_heightmap(self, values: np.ndarray) -> np.ndarray:
+        height, width = values.shape
+        max_size = self._MAX_HEIGHTMAP_DIMENSION
+        largest_dim = max(height, width)
+
+        if largest_dim <= max_size:
+            return np.asarray(values, dtype=np.float32)
+
+        scale = largest_dim / max_size
+        target_height = max(2, int(round(height / scale)))
+        target_width = max(2, int(round(width / scale)))
+
+        row_idx = np.linspace(0, height - 1, target_height, dtype=np.int64)
+        col_idx = np.linspace(0, width - 1, target_width, dtype=np.int64)
+
+        return np.asarray(values[np.ix_(row_idx, col_idx)], dtype=np.float32)
+
+    def _normalize_heightmap(self, values: np.ndarray) -> np.ndarray:
+        finite = np.isfinite(values)
+        if not finite.any():
+            raise ValueError('heightmap does not contain finite values')
+
+        finite_values = values[finite]
+        lo = np.percentile(finite_values, self._HEIGHTMAP_CLIP_LOW_PERCENTILE)
+        hi = np.percentile(finite_values, self._HEIGHTMAP_CLIP_HIGH_PERCENTILE)
+
+        if not np.isfinite(lo) or not np.isfinite(hi) or np.isclose(hi, lo):
+            normalized = np.zeros_like(values, dtype=np.float32)
+            normalized[finite] = 0.5
+            return normalized
+
+        clipped = np.clip(values, lo, hi)
+        normalized = (clipped - lo) / (hi - lo)
+        normalized = np.nan_to_num(normalized, nan=0.0, posinf=1.0, neginf=0.0)
+
+        if not np.isclose(self._HEIGHTMAP_GAMMA, 1.0):
+            normalized = np.power(normalized, self._HEIGHTMAP_GAMMA)
+
+        return normalized.astype(np.float32)
+
     def plotSurfaceFromFile(self, filename: str, *, prompt_user: bool = True):
 
         if filename.casefold().endswith('.py'):
@@ -185,30 +231,9 @@ class SurfacePlotter(QtWidgets.QFrame):
                     height_data = height_data[..., 0]
                 if height_data.ndim != 2:
                     raise ValueError('unsupported TIFF dimensions')
-
-                downsample_step = max(
-                    1,
-                    int(np.ceil(max(height_data.shape) / self._MAX_HEIGHTMAP_DIMENSION))
-                )
-                height_data = np.asarray(
-                    height_data[::downsample_step, ::downsample_step],
-                    dtype=float
-                )
-
-                finite = np.isfinite(height_data)
-                if not finite.any():
-                    raise ValueError('TIFF does not contain finite values')
-
-                min_height = np.nanmin(height_data)
-                max_height = np.nanmax(height_data)
-                if np.isclose(max_height, min_height):
-                    zz = np.zeros_like(height_data, dtype=np.uint8)
-                else:
-                    height_data = (height_data - min_height) / (max_height - min_height)
-                    height_data = np.nan_to_num(height_data, nan=0.0, posinf=1.0, neginf=0.0)
-                    zz = (height_data * 255).astype(np.uint8)
-
-                h, w = zz.shape
+                height_data = self._downsample_heightmap(height_data)
+                normalized = self._normalize_heightmap(height_data)
+                h, w = normalized.shape
             else:
                 surface_image = QtGui.QImage(filename)
                 if surface_image.isNull():
@@ -232,15 +257,9 @@ class SurfacePlotter(QtWidgets.QFrame):
                 zz = np.asarray(ptr, dtype=np.uint8).reshape((h, w+padding))
                 if padding:
                     zz = zz[:, :-padding]
-
-                downsample_step = max(
-                    1,
-                    int(np.ceil(max(zz.shape) / self._MAX_HEIGHTMAP_DIMENSION))
-                )
-                if downsample_step > 1:
-                    zz = zz[::downsample_step, ::downsample_step]
-
-                h, w = zz.shape
+                zz = self._downsample_heightmap(zz)
+                normalized = zz / 255.0
+                h, w = normalized.shape
 
             default_x_range = 20.0
             default_y_range = default_x_range / w * h
@@ -273,7 +292,7 @@ class SurfacePlotter(QtWidgets.QFrame):
             x = np.linspace(-x_range/2, x_range/2, w)
             y = np.linspace(-y_range/2, y_range/2, h)
 
-            z = np.flipud(zz.T).astype(float)*(z_range/(2**8-1))
+            z = np.flipud(normalized.T).astype(float) * z_range
 
             self._surfaceData = x, y, z
             x, y, z = self._surfaceData
@@ -358,7 +377,7 @@ class SurfacePlotter(QtWidgets.QFrame):
         self.surf.setData(x=x, y=y, z=z)
 
     def exportSurface(self, *, filename: str | None = None):
-        '''export a surface to a PNG image file'''
+        '''export a surface to a PNG or TIFF heightmap file'''
         x, y, z, *c = self._surfaceData
 
         if filename is None:
@@ -366,28 +385,40 @@ class SurfacePlotter(QtWidgets.QFrame):
                 self,
                 'save heightmap',
                 f'./heightmap_{int(np.ptp(x))}'
-                f'_{int(np.ptp(y))}_{np.ptp(z):.1f}.png',
-                'PNG (*.png)'
+                f'_{int(np.ptp(y))}_{np.ptp(z):.1f}.tif',
+                'TIFF (*.tif *.tiff);;PNG (*.png)'
             )
 
         if filename in ('', None):
             return
 
-        if not filename.casefold().endswith('.png'):
-            filename += '.png'
+        file_suffix = os.path.splitext(filename)[1].casefold()
+        if file_suffix not in ('.png', '.tif', '.tiff'):
+            filename += '.tif'
+            file_suffix = '.tif'
 
-        # zz: np.ndarray = (1000*(z - z.min())).astype(np.uint16)
-        zz: np.ndarray = ((z - z.min())*(255/np.ptp(z))).astype(np.uint8)
-        zz = np.flipud(zz).transpose()
+        z_span = np.ptp(z)
+        if np.isclose(z_span, 0.0):
+            normalized = np.zeros_like(z, dtype=np.float32)
+        else:
+            normalized = ((z - z.min()) / z_span).astype(np.float32)
 
-        img = QtGui.QImage(
-            zz.data.tobytes(),
-            z.shape[0],
-            z.shape[1],
-            # z.shape[0]*2,  # 16 bits == 2 bytes
-            # QtGui.QImage.Format.Format_Grayscale16
-            z.shape[0],  # 8 bits == 1 byte
-            QtGui.QImage.Format.Format_Grayscale8
-        )
+        if file_suffix == '.png':
+            zz: np.ndarray = (normalized * 255).astype(np.uint8)
+            zz = np.flipud(zz).transpose()
 
-        img.save(filename)
+            img = QtGui.QImage(
+                zz.data.tobytes(),
+                z.shape[0],
+                z.shape[1],
+                z.shape[0],
+                QtGui.QImage.Format.Format_Grayscale8
+            )
+            img.save(filename)
+            return
+
+        import tifffile
+
+        zz16 = (normalized * 65535).astype(np.uint16)
+        zz16 = np.flipud(zz16).transpose()
+        tifffile.imwrite(filename, zz16, photometric='minisblack')
