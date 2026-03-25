@@ -35,6 +35,10 @@ def get_most_recent_file() -> str:
 
 def get_project_dem_file() -> str | None:
     project_root = Path(__file__).resolve().parents[2]
+    bundled_dem = project_root / 'img' / 'default_moon_dem.tif'
+    if bundled_dem.exists():
+        return str(bundled_dem)
+
     dem_files = sorted(
         (
             p for p in project_root.iterdir()

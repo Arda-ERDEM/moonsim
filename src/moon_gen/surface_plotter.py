@@ -180,7 +180,7 @@ class SurfacePlotter(QtWidgets.QFrame):
             if file_suffix in ('.tif', '.tiff'):
                 import tifffile
 
-                height_data = np.asarray(tifffile.imread(filename))
+                height_data = tifffile.memmap(filename)
                 if height_data.ndim > 2:
                     height_data = height_data[..., 0]
                 if height_data.ndim != 2:
@@ -190,10 +190,11 @@ class SurfacePlotter(QtWidgets.QFrame):
                     1,
                     int(np.ceil(max(height_data.shape) / self._MAX_HEIGHTMAP_DIMENSION))
                 )
-                if downsample_step > 1:
-                    height_data = height_data[::downsample_step, ::downsample_step]
+                height_data = np.asarray(
+                    height_data[::downsample_step, ::downsample_step],
+                    dtype=float
+                )
 
-                height_data = height_data.astype(float)
                 finite = np.isfinite(height_data)
                 if not finite.any():
                     raise ValueError('TIFF does not contain finite values')

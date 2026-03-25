@@ -23,6 +23,16 @@ After installation, the project can be run as module:
 python -m moon_gen
 ```
 
+By default, the GUI loads the bundled TIFF DEM at `img/default_moon_dem.tif`,
+so a fresh clone starts with the same TIFF-based view.
+
+If you have a large external DEM (for example
+`Lunar_LRO_LOLA_Global_LDEM_118m_Mar2014.tif`), place it in the project root
+and pass it explicitly:
+```bash
+python -m moon_gen Lunar_LRO_LOLA_Global_LDEM_118m_Mar2014.tif
+```
+
 
 ## TODOs
 
