@@ -3,3 +3,6 @@
 */*.egg-info/
 
 [.]venv/
+
+# local large DEM data
+Lunar_LRO_LOLA_Global_LDEM_118m_Mar2014.tif

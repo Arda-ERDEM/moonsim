@@ -23,6 +23,8 @@ from moon_gen.lib.utils import SurfaceFunctionType, SurfaceType
 
 class SurfacePlotter(QtWidgets.QFrame):
 
+    _MAX_HEIGHTMAP_DIMENSION = 512
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._logger = logging.getLogger(self.__class__.__name__)
@@ -39,8 +41,11 @@ class SurfacePlotter(QtWidgets.QFrame):
             np.zeros((2, 2))
         )
 
+        x, y, z = self._surfaceData
         self.surf = gl.GLSurfacePlotItem(
-            *self._surfaceData,
+            x=x,
+            y=y,
+            z=z,
             shader='shaded'
         )
         self.vw.addItem(self.surf)
@@ -124,14 +129,14 @@ class SurfacePlotter(QtWidgets.QFrame):
         filename = a0.mimeData().text().removeprefix('file:///')
         self.plotSurfaceFromFile(filename)
 
-    def plotSurfaceFromFile(self, filename: str):
+    def plotSurfaceFromFile(self, filename: str, *, prompt_user: bool = True):
 
         if filename.casefold().endswith('.py'):
             self.plotSurfaceFromModule(filename)
         elif filename.casefold().endswith(
             ('.png', '.jpg', '.jepg', '.tif', '.tiff')
         ):
-            self.plotSurfaceFromHeightmap(filename)
+            self.plotSurfaceFromHeightmap(filename, prompt_user=prompt_user)
         else:
             ermsg = f"unsupported filetype `{filename.rsplit('.', 1)[-1]}`"
             self._err_message.showMessage(ermsg, 'warning')
@@ -154,7 +159,8 @@ class SurfacePlotter(QtWidgets.QFrame):
         try:
             surface_func: SurfaceFunctionType = module.surface
             self._surfaceData = surface_func()
-            self.surf.setData(*self._surfaceData)
+            x, y, z = self._surfaceData
+            self.surf.setData(x=x, y=y, z=z)
             self._module = module
             if surface_func.__doc__ is not None:
                 self.setToolTip(surface_func.__doc__)
@@ -166,52 +172,111 @@ class SurfacePlotter(QtWidgets.QFrame):
             self._logger.error(ermsg)
             self._logger.exception(e)
 
-    def plotSurfaceFromHeightmap(self, filename: str):
+    def plotSurfaceFromHeightmap(self, filename: str, *, prompt_user: bool = True):
         '''plot the surface defined in a heightmap image file'''
         try:
-            surface_image = QtGui.QImage(filename)
-            surface_image.convertTo(
-                QtGui.QImage.Format.Format_Grayscale8,
-                QtCore.Qt.ImageConversionFlag.MonoOnly
-            )
-            w = surface_image.width()
-            h = surface_image.height()
-            ptr = surface_image.constBits()
-            ptr.setsize(surface_image.sizeInBytes())
+            file_suffix = os.path.splitext(filename)[1].casefold()
 
-            # QImage has some end-of-line padding, so that each line
-            # is word-aligned
-            padding = surface_image.sizeInBytes()//w - h
+            if file_suffix in ('.tif', '.tiff'):
+                import tifffile
 
-            x_range, _ = QtWidgets.QInputDialog.getDouble(
-                self,
-                "X range",
-                "please input width of heightmap image (in meters)",
-                20, 0, 10000
-            )
-            y_range, _ = QtWidgets.QInputDialog.getDouble(
-                self,
-                "Y range",
-                "please input height of heightmap image (in meters)",
-                x_range/w*h, 0, 10000
-            )
-            z_range, _ = QtWidgets.QInputDialog.getDouble(
-                self,
-                "Z range",
-                "please input depth of heightmap image (in meters)",
-                1, 0, 10000
-            )
+                height_data = np.asarray(tifffile.imread(filename))
+                if height_data.ndim > 2:
+                    height_data = height_data[..., 0]
+                if height_data.ndim != 2:
+                    raise ValueError('unsupported TIFF dimensions')
+
+                downsample_step = max(
+                    1,
+                    int(np.ceil(max(height_data.shape) / self._MAX_HEIGHTMAP_DIMENSION))
+                )
+                if downsample_step > 1:
+                    height_data = height_data[::downsample_step, ::downsample_step]
+
+                height_data = height_data.astype(float)
+                finite = np.isfinite(height_data)
+                if not finite.any():
+                    raise ValueError('TIFF does not contain finite values')
+
+                min_height = np.nanmin(height_data)
+                max_height = np.nanmax(height_data)
+                if np.isclose(max_height, min_height):
+                    zz = np.zeros_like(height_data, dtype=np.uint8)
+                else:
+                    height_data = (height_data - min_height) / (max_height - min_height)
+                    height_data = np.nan_to_num(height_data, nan=0.0, posinf=1.0, neginf=0.0)
+                    zz = (height_data * 255).astype(np.uint8)
+
+                h, w = zz.shape
+            else:
+                surface_image = QtGui.QImage(filename)
+                if surface_image.isNull():
+                    raise ValueError('image could not be decoded by Qt')
+
+                surface_image = surface_image.convertToFormat(
+                    QtGui.QImage.Format.Format_Grayscale8,
+                    QtCore.Qt.ImageConversionFlag.MonoOnly
+                )
+
+                w = surface_image.width()
+                h = surface_image.height()
+                ptr = surface_image.constBits()
+                if ptr is None:
+                    raise ValueError('image buffer unavailable')
+                ptr.setsize(surface_image.sizeInBytes())
+
+                # QImage has some end-of-line padding, so that each line
+                # is word-aligned
+                padding = surface_image.bytesPerLine() - w
+                zz = np.asarray(ptr, dtype=np.uint8).reshape((h, w+padding))
+                if padding:
+                    zz = zz[:, :-padding]
+
+                downsample_step = max(
+                    1,
+                    int(np.ceil(max(zz.shape) / self._MAX_HEIGHTMAP_DIMENSION))
+                )
+                if downsample_step > 1:
+                    zz = zz[::downsample_step, ::downsample_step]
+
+                h, w = zz.shape
+
+            default_x_range = 20.0
+            default_y_range = default_x_range / w * h
+            default_z_range = 1.0
+
+            if prompt_user:
+                x_range, _ = QtWidgets.QInputDialog.getDouble(
+                    self,
+                    "X range",
+                    "please input width of heightmap image (in meters)",
+                    default_x_range, 0, 10000
+                )
+                y_range, _ = QtWidgets.QInputDialog.getDouble(
+                    self,
+                    "Y range",
+                    "please input height of heightmap image (in meters)",
+                    default_y_range, 0, 10000
+                )
+                z_range, _ = QtWidgets.QInputDialog.getDouble(
+                    self,
+                    "Z range",
+                    "please input depth of heightmap image (in meters)",
+                    default_z_range, 0, 10000
+                )
+            else:
+                x_range = default_x_range
+                y_range = default_y_range
+                z_range = default_z_range
 
             x = np.linspace(-x_range/2, x_range/2, w)
             y = np.linspace(-y_range/2, y_range/2, h)
 
-            zz = np.asarray(ptr, dtype=np.uint8).reshape((h, w+padding))
-            if padding:
-                zz = zz[:, :-padding]
             z = np.flipud(zz.T).astype(float)*(z_range/(2**8-1))
 
             self._surfaceData = x, y, z
-            self.surf.setData(*self._surfaceData)
+            x, y, z = self._surfaceData
+            self.surf.setData(x=x, y=y, z=z)
             self._module = None
 
             self.setToolTip(os.path.basename(filename))
@@ -258,7 +323,8 @@ class SurfacePlotter(QtWidgets.QFrame):
 
         # try to retrieve a surface from the module
         self._surfaceData = self._module.surface()
-        self.surf.setData(*self._surfaceData)
+        x, y, z = self._surfaceData
+        self.surf.setData(x=x, y=y, z=z)
 
     def reloadSurfaceImage(self):
         x, y, z, *c = self._surfaceData
@@ -287,7 +353,8 @@ class SurfacePlotter(QtWidgets.QFrame):
         z *= (z_range/np.ptp(z))
 
         self._surfaceData = x, y, z
-        self.surf.setData(*self._surfaceData)
+        x, y, z = self._surfaceData
+        self.surf.setData(x=x, y=y, z=z)
 
     def exportSurface(self, *, filename: str | None = None):
         '''export a surface to a PNG image file'''

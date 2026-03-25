@@ -22,6 +22,7 @@ dependencies = [
     "pyopengl",
     "PyQt6",
     "pyqtgraph",
+    "tifffile",
 ]
 
 [project.optional-dependencies]

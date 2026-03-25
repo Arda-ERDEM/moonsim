@@ -1,6 +1,9 @@
 import os
 import sys
 import argparse
+from pathlib import Path
+
+os.environ.setdefault('QT_IMAGEIO_MAXALLOC', '4096')
 
 import pyqtgraph as pg
 
@@ -16,19 +19,49 @@ args = parser.parse_args()
 
 
 def get_most_recent_file() -> str:
-    surfaces_dir = os.path.join(os.path.dirname(__file__), 'surfaces')
-    print(surfaces_dir)
-    print(*os.listdir(surfaces_dir), sep='\n')
-
-    files = filter(
-        os.path.isfile,
-        map(
-            lambda p: os.path.join(surfaces_dir, p),
-            os.listdir(surfaces_dir)
-        )
+    surfaces_dir = Path(__file__).with_name('surfaces')
+    files = sorted(
+        (
+            p for p in surfaces_dir.iterdir()
+            if p.is_file()
+            and p.suffix == '.py'
+            and p.name != '__init__.py'
+        ),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
     )
-    files = sorted(files, key=os.path.getmtime)
-    return files[0]
+    return str(files[0])
+
+
+def get_project_dem_file() -> str | None:
+    project_root = Path(__file__).resolve().parents[2]
+    dem_files = sorted(
+        (
+            p for p in project_root.iterdir()
+            if p.is_file() and p.suffix.casefold() in ('.tif', '.tiff')
+        ),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+
+    if dem_files:
+        return str(dem_files[0])
+
+    return None
+
+
+def get_default_startup_file() -> str:
+    dem_file = get_project_dem_file()
+    if dem_file is not None:
+        return dem_file
+
+    surfaces_dir = Path(__file__).with_name('surfaces')
+    default_file = surfaces_dir / 'full_1_random.py'
+
+    if default_file.exists():
+        return str(default_file)
+
+    return get_most_recent_file()
 
 
 pg.mkQApp("GLSurfacePlot Example")
@@ -37,7 +70,8 @@ with SurfacePlotter() as w:
         w.plotSurfaceFromFile(args.FILE)
     elif args.newest:
         file = get_most_recent_file()
-        print(f"using {file}")
         w.plotSurfaceFromFile(file)
+    else:
+        w.plotSurfaceFromFile(get_default_startup_file(), prompt_user=False)
 
     sys.exit(pg.exec())
