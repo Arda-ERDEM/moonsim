@@ -23,6 +23,7 @@ dependencies = [
     "PyQt6",
     "pyqtgraph",
     "tifffile",
+    "matplotlib",
 ]
 
 [project.optional-dependencies]

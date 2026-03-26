@@ -55,15 +55,20 @@ def get_project_dem_file() -> str | None:
 
 
 def get_default_startup_file() -> str:
+    surfaces_dir = Path(__file__).with_name('surfaces')
+    default_file = surfaces_dir / 'full_2_rugged_static.py'
+
+    if default_file.exists():
+        return str(default_file)
+
     dem_file = get_project_dem_file()
     if dem_file is not None:
         return dem_file
 
-    surfaces_dir = Path(__file__).with_name('surfaces')
-    default_file = surfaces_dir / 'full_1_random.py'
+    fallback_file = surfaces_dir / 'full_1_random.py'
 
-    if default_file.exists():
-        return str(default_file)
+    if fallback_file.exists():
+        return str(fallback_file)
 
     return get_most_recent_file()
 

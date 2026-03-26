@@ -22,6 +22,28 @@ else:
     from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from moon_gen.lib.utils import SurfaceFunctionType, SurfaceType
+from moon_gen.planning.main import plan_mission, generate_all_candidates
+from moon_gen.planning import config as planning_config
+
+
+class _StdoutBridge(QtCore.QObject):
+    text_emitted = QtCore.pyqtSignal(str)
+
+
+class _StdoutTee:
+    def __init__(self, original_stream, bridge: _StdoutBridge):
+        self._original_stream = original_stream
+        self._bridge = bridge
+
+    def write(self, text: str):
+        if self._original_stream is not None:
+            self._original_stream.write(text)
+        if text:
+            self._bridge.text_emitted.emit(text)
+
+    def flush(self):
+        if self._original_stream is not None:
+            self._original_stream.flush()
 
 
 class SurfacePlotter(QtWidgets.QFrame):
@@ -33,6 +55,10 @@ class SurfacePlotter(QtWidgets.QFrame):
     _HEIGHTMAP_CLIP_LOW_PERCENTILE = 1.0
     _HEIGHTMAP_CLIP_HIGH_PERCENTILE = 99.0
     _HEIGHTMAP_GAMMA = 0.9
+    _PATHFIND_MAX_GRID_DIMENSION = max(
+        64,
+        int(os.environ.get('MOON_GEN_PATHFIND_MAX_GRID_DIMENSION', '180'))
+    )
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -53,6 +79,16 @@ class SurfacePlotter(QtWidgets.QFrame):
         self._nextPickTarget = 'start'
         self._mapImageItem: pg.ImageItem | None = None
         self._mapWaypointScatter: pg.ScatterPlotItem | None = None
+
+        # NEW: Multi-route selection system
+        self._candidate_routes: dict[str, dict] = {}  # {safe/eco/fast: {path, cost, etc}}
+        self._candidate_path_items: dict[str, gl.GLLinePlotItem] = {}  # For visualization
+        self._current_selected_mode: str | None = None  # Currently selected route
+        self._mission_data: dict | None = None  # Full mission data from planner
+        self._consoleWidget: QtWidgets.QPlainTextEdit | None = None
+        self._stdoutBridge: _StdoutBridge | None = None
+        self._stdoutOriginal = None
+        self._stdoutTee: _StdoutTee | None = None
 
         self.vw = gl.GLViewWidget(self)
 
@@ -77,6 +113,7 @@ class SurfacePlotter(QtWidgets.QFrame):
         self._tabs = QtWidgets.QTabWidget(self)
         self._tabs.setMinimumWidth(280)
         self._setupMissionPlannerTab()
+        self._installMissionConsoleHook()
 
         self.setAcceptDrops(True)
 
@@ -195,6 +232,49 @@ class SurfacePlotter(QtWidgets.QFrame):
         mission_row.addWidget(self._stopMissionButton)
         planner_layout.addLayout(mission_row)
 
+        # NEW: Route Selection Buttons
+        route_selection_label = QtWidgets.QLabel('Select Route:', planner_tab)
+        route_selection_label.setStyleSheet("font-weight: bold;")
+        planner_layout.addWidget(route_selection_label)
+
+        route_buttons_row = QtWidgets.QHBoxLayout()
+        
+        self._buttonSafe = QtWidgets.QPushButton('SAFE', planner_tab)
+        self._buttonSafe.setStyleSheet("color: white; background-color: #2ecc71; font-weight: bold;")
+        self._buttonSafe.clicked.connect(lambda: self._selectRoute('safe'))
+        self._buttonSafe.setEnabled(False)
+        
+        self._buttonEco = QtWidgets.QPushButton('ECO', planner_tab)
+        self._buttonEco.setStyleSheet("color: white; background-color: #f1c40f; font-weight: bold;")
+        self._buttonEco.clicked.connect(lambda: self._selectRoute('eco'))
+        self._buttonEco.setEnabled(False)
+        
+        self._buttonFast = QtWidgets.QPushButton('FAST', planner_tab)
+        self._buttonFast.setStyleSheet("color: white; background-color: #e74c3c; font-weight: bold;")
+        self._buttonFast.clicked.connect(lambda: self._selectRoute('fast'))
+        self._buttonFast.setEnabled(False)
+        
+        self._buttonAuto = QtWidgets.QPushButton('AUTO', planner_tab)
+        self._buttonAuto.setStyleSheet("color: white; background-color: #3498db; font-weight: bold;")
+        self._buttonAuto.clicked.connect(self._selectRouteAuto)
+        self._buttonAuto.setEnabled(False)
+        
+        route_buttons_row.addWidget(self._buttonSafe)
+        route_buttons_row.addWidget(self._buttonEco)
+        route_buttons_row.addWidget(self._buttonFast)
+        route_buttons_row.addWidget(self._buttonAuto)
+        planner_layout.addLayout(route_buttons_row)
+
+        console_label = QtWidgets.QLabel('Route Logs:', planner_tab)
+        console_label.setStyleSheet("font-weight: bold;")
+        planner_layout.addWidget(console_label)
+
+        self._consoleWidget = QtWidgets.QPlainTextEdit(planner_tab)
+        self._consoleWidget.setReadOnly(True)
+        self._consoleWidget.setMinimumHeight(140)
+        self._consoleWidget.setPlaceholderText('Planner terminal output will appear here in real-time...')
+        planner_layout.addWidget(self._consoleWidget)
+
         self._missionStatusLabel = QtWidgets.QLabel(
             'Pick Start and End directly on the map, then click Plan Path.',
             planner_tab
@@ -203,10 +283,36 @@ class SurfacePlotter(QtWidgets.QFrame):
         planner_layout.addWidget(self._missionStatusLabel)
         planner_layout.addStretch(1)
 
-        self._tabs.addTab(planner_tab, 'Mission Planner')
+        self._tabs.addTab(planner_tab, 'Moon Route')
 
     def _setMissionStatus(self, text: str):
         self._missionStatusLabel.setText(text)
+
+    def _installMissionConsoleHook(self):
+        if self._consoleWidget is None or self._stdoutTee is not None:
+            return
+
+        self._stdoutBridge = _StdoutBridge(self)
+        self._stdoutBridge.text_emitted.connect(self._appendMissionConsoleText)
+
+        self._stdoutOriginal = sys.stdout
+        self._stdoutTee = _StdoutTee(self._stdoutOriginal, self._stdoutBridge)
+        sys.stdout = self._stdoutTee
+
+    def _appendMissionConsoleText(self, text: str):
+        if self._consoleWidget is None:
+            return
+
+        self._consoleWidget.moveCursor(QtGui.QTextCursor.MoveOperation.End)
+        self._consoleWidget.insertPlainText(text)
+        self._consoleWidget.moveCursor(QtGui.QTextCursor.MoveOperation.End)
+
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        if self._stdoutTee is not None and self._stdoutOriginal is not None and sys.stdout is self._stdoutTee:
+            sys.stdout = self._stdoutOriginal
+        self._stdoutTee = None
+        self._stdoutOriginal = None
+        super().closeEvent(event)
 
     def _activateStartPick(self):
         self._nextPickTarget = 'start'
@@ -235,6 +341,18 @@ class SurfacePlotter(QtWidgets.QFrame):
         if self._roverItem is not None:
             self.vw.removeItem(self._roverItem)
             self._roverItem = None
+
+        # Clear candidate routes
+        self._clearRouteVisualization()
+        self._candidate_routes.clear()
+        self._mission_data = None
+        self._current_selected_mode = None
+
+        # Disable route selection buttons
+        self._buttonSafe.setEnabled(False)
+        self._buttonEco.setEnabled(False)
+        self._buttonFast.setEnabled(False)
+        self._buttonAuto.setEnabled(False)
 
         self._setMissionStatus('Waypoints cleared. Pick START then END on map.')
 
@@ -332,7 +450,7 @@ class SurfacePlotter(QtWidgets.QFrame):
         self._refreshWaypointLabels()
         self._refreshMapWaypointOverlay()
 
-        self._missionHazardMap = self._buildHazardMap(z)
+        self._missionHazardMap = None
 
     def _clearMissionGraphics(self):
         self.stopRoverMission()
@@ -402,6 +520,34 @@ class SurfacePlotter(QtWidgets.QFrame):
             hazard = self._buildHazardMap(z)
             self._missionHazardMap = hazard
 
+        stride = max(
+            1,
+            int(np.ceil(max(nx, ny) / self._PATHFIND_MAX_GRID_DIMENSION))
+        )
+
+        if stride > 1:
+            row_idx = np.arange(0, nx, stride, dtype=np.int64)
+            col_idx = np.arange(0, ny, stride, dtype=np.int64)
+            if row_idx[-1] != nx - 1:
+                row_idx = np.append(row_idx, nx - 1)
+            if col_idx[-1] != ny - 1:
+                col_idx = np.append(col_idx, ny - 1)
+
+            hazard_grid = hazard[np.ix_(row_idx, col_idx)]
+            start_idx = (
+                int(np.abs(row_idx - start_idx[0]).argmin()),
+                int(np.abs(col_idx - start_idx[1]).argmin()),
+            )
+            end_idx = (
+                int(np.abs(row_idx - end_idx[0]).argmin()),
+                int(np.abs(col_idx - end_idx[1]).argmin()),
+            )
+            nx, ny = hazard_grid.shape
+        else:
+            hazard_grid = hazard
+            row_idx = np.arange(nx, dtype=np.int64)
+            col_idx = np.arange(ny, dtype=np.int64)
+
         neighbors = [
             (-1, 0), (1, 0), (0, -1), (0, 1),
             (-1, -1), (-1, 1), (1, -1), (1, 1)
@@ -418,7 +564,7 @@ class SurfacePlotter(QtWidgets.QFrame):
         came_from: dict[tuple[int, int], tuple[int, int] | None] = {start_idx: None}
         cost_so_far: dict[tuple[int, int], float] = {start_idx: 0.0}
 
-        max_expansions = min(nx * ny, 600_000)
+        max_expansions = min(nx * ny, 120_000)
         expansions = 0
 
         while frontier and expansions < max_expansions:
@@ -435,7 +581,7 @@ class SurfacePlotter(QtWidgets.QFrame):
                     continue
 
                 step_len = float(np.hypot(di, dj))
-                avg_hazard = 0.5 * (hazard[ci, cj] + hazard[ni, nj])
+                avg_hazard = 0.5 * (hazard_grid[ci, cj] + hazard_grid[ni, nj])
                 new_cost = cost_so_far[current] + step_len * avg_hazard
                 nxt = (ni, nj)
 
@@ -451,11 +597,36 @@ class SurfacePlotter(QtWidgets.QFrame):
         path: list[tuple[int, int]] = []
         node: tuple[int, int] | None = end_idx
         while node is not None:
-            path.append(node)
+            path.append((int(row_idx[node[0]]), int(col_idx[node[1]])))
             node = came_from[node]
 
         path.reverse()
-        return path
+        return self._densifyIndexPath(path)
+
+    def _densifyIndexPath(
+        self,
+        path: list[tuple[int, int]],
+    ) -> list[tuple[int, int]]:
+        if len(path) <= 1:
+            return path
+
+        dense_path: list[tuple[int, int]] = [path[0]]
+        for (ai, aj), (bi, bj) in zip(path[:-1], path[1:]):
+            di = bi - ai
+            dj = bj - aj
+            steps = max(abs(di), abs(dj))
+            if steps <= 1:
+                if dense_path[-1] != (bi, bj):
+                    dense_path.append((bi, bj))
+                continue
+
+            for step in range(1, steps + 1):
+                ti = ai + int(round(di * step / steps))
+                tj = aj + int(round(dj * step / steps))
+                if dense_path[-1] != (ti, tj):
+                    dense_path.append((ti, tj))
+
+        return dense_path
 
     def _setRoverPosition(self, point: np.ndarray):
         if self._roverItem is None:
@@ -479,6 +650,7 @@ class SurfacePlotter(QtWidgets.QFrame):
             self._setMissionStatus('Pick both START and END waypoint on map first.')
             return
 
+        x, y, z, *c = self._surfaceData
         start_idx = self._xyToGridIndex(self._startWaypoint[0], self._startWaypoint[1])
         end_idx = self._xyToGridIndex(self._endWaypoint[0], self._endWaypoint[1])
 
@@ -486,51 +658,233 @@ class SurfacePlotter(QtWidgets.QFrame):
             self._setMissionStatus('Start and end waypoint are the same.')
             return
 
-        path_idx = self._aStarPath(start_idx, end_idx)
-        if path_idx is None or len(path_idx) < 2:
-            self._setMissionStatus('No safe path found. Increase map size or lower avoid weights.')
+        # Override planning config with UI values
+        planning_config.SAFE_WEIGHTS['slope'] = self._slopeSpin.value() * 2.0
+        planning_config.SAFE_WEIGHTS['obstacle'] = self._avoidanceSpin.value() * 2.0
+        
+        self._setMissionStatus('Generating all three candidate routes (Safe, Eco, Fast)...')
+        QtWidgets.QApplication.processEvents()
+
+        try:
+            # IMPORT the new function from planning.main
+            from moon_gen.planning.main import generate_all_candidates
+            
+            # Generate ALL three routes WITHOUT selecting
+            result = generate_all_candidates(
+                image_input=z,
+                start=start_idx,
+                goal=end_idx
+            )
+        except Exception as e:
+            self._logger.error(f"Planning failed: {e}", exc_info=True)
+            self._setMissionStatus(f'Planning Error: {e}')
             return
 
-        path_points = np.vstack([self._gridIndexToPoint(i, j) for i, j in path_idx])
+        # Store the mission data
+        self._mission_data = result
+        plans = result.get('plans', {})
+        
+        # Ensure all three routes exist
+        valid_modes = [m for m in ('safe', 'eco', 'fast') if m in plans and plans[m]['summary']['exists']]
+        if not valid_modes:
+            self._setMissionStatus('No valid routes found. Adjust terrain avoidance weights.')
+            return
+
+        # Clear previous route visualization
+        self._clearRouteVisualization()
+        
+        # Generate and visualize all three routes
+        self._candidate_routes = {}
+        colors = {'safe': (0.2, 0.9, 0.4, 1.0), 'eco': (0.2, 0.5, 0.9, 1.0), 'fast': (0.9, 0.3, 0.2, 1.0)}
+        
+        for mode in ('safe', 'eco', 'fast'):
+            if mode not in plans:
+                continue
+                
+            plan = plans[mode]
+            summary = plan['summary']
+            
+            if not summary['exists']:
+                continue
+            
+            # Get the path
+            path_result = plan['result']
+            path_indices = path_result.smoothed_path if path_result.smoothed_path else path_result.path
+            
+            # Convert to 3D points
+            points = []
+            for r, c in path_indices:
+                r = int(np.clip(r, 0, z.shape[0]-1))
+                c = int(np.clip(c, 0, z.shape[1]-1))
+                points.append(self._gridIndexToPoint(r, c))
+            
+            if not points:
+                continue
+                
+            path_points = np.vstack(points)
+            
+            # Store route data
+            self._candidate_routes[mode] = {
+                'path_points': path_points,
+                'path_indices': path_indices,
+                'summary': summary,
+                'line_item': None,
+            }
+            
+            # Draw the route (not highlighted yet)
+            color = colors.get(mode, (1, 1, 1, 1))
+            line_item = gl.GLLinePlotItem(
+                pos=path_points,
+                color=color,
+                width=2.0,
+                antialias=True,
+                mode='line_strip'
+            )
+            self.vw.addItem(line_item)
+            self._candidate_routes[mode]['line_item'] = line_item
+            self._candidate_path_items[mode] = line_item
+
+        # Print to console
+        print("=" * 70)
+        print("MULTI-ROUTE PATH PLANNING COMPLETE")
+        print("=" * 70)
+        for mode in ('safe', 'eco', 'fast'):
+            if mode in self._candidate_routes:
+                summary = self._candidate_routes[mode]['summary']
+                print(f"{mode.upper():5} | Length: {summary['path_length']:6.1f} | Risk: {summary['mean_risk']:.3f} | Cost: {summary['path_cost']:8.2f}")
+
+        # Enable route selection buttons
+        for btn_name in ('safe', 'eco', 'fast'):
+            if btn_name in self._candidate_routes:
+                getattr(self, f'_button{btn_name.capitalize()}').setEnabled(True)
+        self._buttonAuto.setEnabled(True)
+
+        # Update status
+        self._setMissionStatus('All routes GENERATED. Click SAFE, ECO, FAST, or AUTO to select.')
+        self._current_selected_mode = None
+
+    def _clearRouteVisualization(self):
+        """Remove all route line items from the 3D view."""
+        for mode in self._candidate_path_items.values():
+            if mode is not None:
+                try:
+                    self.vw.removeItem(mode)
+                except:
+                    pass
+        self._candidate_path_items.clear()
+
+    def _selectRoute(self, mode: str):
+        """Manually select a route (SAFE, ECO, or FAST)."""
+        if mode not in self._candidate_routes:
+            self._setMissionStatus(f'{mode.upper()} route is not available.')
+            return
+
+        self._current_selected_mode = mode
+        route_data = self._candidate_routes[mode]
+        path_points = route_data['path_points']
+        summary = route_data['summary']
+
+        # Update the active path (for rover movement)
         self._plannedPath = path_points
         self._roverPathCursor = 0
 
-        if self._missionPathItem is not None:
-            self.vw.removeItem(self._missionPathItem)
-        self._missionPathItem = gl.GLLinePlotItem(
-            pos=path_points,
-            color=(1.0, 0.85, 0.2, 1.0),
-            width=2.0,
-            antialias=True,
-            mode='line_strip'
-        )
-        self.vw.addItem(self._missionPathItem)
+        # Set rover to start
+        if len(path_points) > 0:
+            self._setRoverPosition(path_points[0])
 
-        if self._waypointItem is not None:
-            self.vw.removeItem(self._waypointItem)
-        waypoint_points = np.vstack([path_points[0], path_points[-1]])
-        self._waypointItem = gl.GLScatterPlotItem(
-            pos=waypoint_points,
-            color=np.array([
-                [0.1, 1.0, 0.2, 1.0],
-                [1.0, 0.2, 0.2, 1.0]
-            ]),
-            size=12,
-            pxMode=True
-        )
-        self.vw.addItem(self._waypointItem)
+        # Highlight the selected route (make it thicker/brighter)
+        self._updateRouteHighlight(mode)
 
-        self._setRoverPosition(path_points[0])
-
-        path_length = float(np.sum(np.linalg.norm(np.diff(path_points, axis=0), axis=1)))
-        self._setMissionStatus(
-            f'Planned path: {len(path_points)} nodes, {path_length:.2f} m. '
-            'Click Start Rover.'
+        # Update status
+        status_msg = (
+            f"SELECTED: {mode.upper()} | "
+            f"Length: {summary['path_length']:.1f} | "
+            f"Risk: {summary['mean_risk']:.3f} | "
+            f"Click 'Start Rover' to execute."
         )
+        self._setMissionStatus(status_msg)
+        print(f"[SELECTION] User selected {mode.upper()} route")
+
+    def _selectRouteAuto(self):
+        """Automatically select the best route using the decision logic."""
+        if not self._mission_data:
+            self._setMissionStatus('No mission data. Plan path first.')
+            return
+
+        plans = self._mission_data.get('plans', {})
+        mission = self._mission_data.get('mission')
+        
+        # Get candidate summaries
+        candidate_summaries = {mode: plans[mode]['summary'] for mode in plans if plans[mode]['summary']['exists']}
+        
+        if not candidate_summaries:
+            self._setMissionStatus('No valid routes for AUTO selection.')
+            return
+
+        # Use the decision logic
+        from moon_gen.planning.decision import select_autonomous_mode
+        
+        selected_mode, explanation = select_autonomous_mode(candidate_summaries, mission)
+
+        if not selected_mode or selected_mode not in self._candidate_routes:
+            self._setMissionStatus('AUTO failed to select a route.')
+            return
+
+        # Highlight explanation
+        factors = explanation.get('main_decision_factors', [])
+        reason = factors[0] if factors else "Optimal selection."
+
+        self._current_selected_mode = selected_mode
+        route_data = self._candidate_routes[selected_mode]
+        path_points = route_data['path_points']
+
+        # Update active path
+        self._plannedPath = path_points
+        self._roverPathCursor = 0
+
+        # Set rover to start
+        if len(path_points) > 0:
+            self._setRoverPosition(path_points[0])
+
+        # Highlight selected route
+        self._updateRouteHighlight(selected_mode)
+
+        # Status with explanation
+        status_msg = (
+            f"AUTO SELECTED: {selected_mode.upper()}\n"
+            f"Reason: {reason}\n"
+            f"Ready for execution."
+        )
+        self._setMissionStatus(status_msg)
+        print(f"[AUTO DECISION] Selected {selected_mode.upper()}")
+        print(f"  Reason: {reason}")
+
+    def _updateRouteHighlight(self, selected_mode: str):
+        """Update line widths/colors to highlight the selected route."""
+        colors = {'safe': (0.2, 0.9, 0.4, 1.0), 'eco': (0.2, 0.5, 0.9, 1.0), 'fast': (0.9, 0.3, 0.2, 1.0)}
+        
+        for mode in ('safe', 'eco', 'fast'):
+            if mode not in self._candidate_routes:
+                continue
+                
+            line_item = self._candidate_routes[mode]['line_item']
+            if line_item is None:
+                continue
+            
+            # Selected route: thicker, full opacity
+            # Other routes: thinner, slightly dimmed
+            if mode == selected_mode:
+                line_item.setData(width=4.0, color=colors[mode])
+            else:
+                # Dim non-selected routes
+                dim_color = tuple(c * 0.5 + 0.2 for c in colors[mode][:3]) + (0.6,)
+                line_item.setData(width=1.5, color=dim_color)
 
     def startRoverMission(self):
         if self._plannedPath is None or len(self._plannedPath) < 2:
-            self.planMissionPath()
+            if not self._current_selected_mode:
+                self._setMissionStatus('No route selected. Generate paths and select SAFE, ECO, FAST, or AUTO.')
+                return
 
         if self._plannedPath is None or len(self._plannedPath) < 2:
             return
@@ -602,14 +956,18 @@ class SurfacePlotter(QtWidgets.QFrame):
         if largest_dim <= max_size:
             return np.asarray(values, dtype=np.float32)
 
-        scale = largest_dim / max_size
-        target_height = max(2, int(round(height / scale)))
-        target_width = max(2, int(round(width / scale)))
+        scale_factor = int(np.ceil(largest_dim / max_size))
+        target_height = height // scale_factor
+        target_width = width // scale_factor
 
-        row_idx = np.linspace(0, height - 1, target_height, dtype=np.int64)
-        col_idx = np.linspace(0, width - 1, target_width, dtype=np.int64)
+        if target_height < 1 or target_width < 1:
+            return np.asarray(values, dtype=np.float32)
 
-        return np.asarray(values[np.ix_(row_idx, col_idx)], dtype=np.float32)
+        trimmed = values[:target_height * scale_factor, :target_width * scale_factor]
+        reshaped = trimmed.reshape(target_height, scale_factor, target_width, scale_factor)
+        downsampled = reshaped.mean(axis=(1, 3))
+
+        return np.asarray(downsampled, dtype=np.float32)
 
     def _normalize_heightmap(self, values: np.ndarray) -> np.ndarray:
         finite = np.isfinite(values)

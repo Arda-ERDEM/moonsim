@@ -7,14 +7,72 @@ procedural heightmaps based on perlin noise.
 
 import math
 import typing
+from pathlib import Path
 
 import numpy as np
+import tifffile as tiff
 from numpy.typing import NDArray
 
 from moon_gen.lib.distributions import (
     cash,
     surface_psd_rough, surface_psd_nominal, surface_psd_smooth
 )
+
+
+def downsample_heightmap(
+    input_path: str | Path,
+    output_path: str | Path,
+    scale_factor: int = 2,
+    compression: str = 'deflate',
+) -> None:
+    if scale_factor < 1:
+        raise ValueError('scale_factor must be >= 1')
+
+    with tiff.TiffFile(str(input_path)) as tif:
+        image = tif.asarray()
+        metadata = tif.geotiff_metadata
+
+    if image.ndim < 2:
+        raise ValueError('heightmap must have at least 2 dimensions')
+
+    height, width = image.shape[:2]
+    new_height = height // scale_factor
+    new_width = width // scale_factor
+
+    if new_height < 1 or new_width < 1:
+        raise ValueError('scale_factor is too large for input dimensions')
+
+    trimmed = image[:new_height * scale_factor, :new_width * scale_factor]
+
+    if image.ndim == 2:
+        reshaped = trimmed.reshape(new_height, scale_factor, new_width, scale_factor)
+        downsampled = reshaped.mean(axis=(1, 3))
+    else:
+        trailing_shape = image.shape[2:]
+        reshaped = trimmed.reshape(
+            new_height,
+            scale_factor,
+            new_width,
+            scale_factor,
+            *trailing_shape,
+        )
+        downsampled = reshaped.mean(axis=(1, 3))
+
+    downsampled = downsampled.astype(image.dtype)
+
+    if metadata is None:
+        tiff.imwrite(
+            str(output_path),
+            downsampled,
+            compression=compression,
+        )
+    else:
+        tiff.imwrite(
+            str(output_path),
+            downsampled,
+            compression=compression,
+            metadata=metadata,
+        )
 
 
 @typing.overload

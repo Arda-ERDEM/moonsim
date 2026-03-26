@@ -23,8 +23,26 @@ After installation, the project can be run as module:
 python -m moon_gen
 ```
 
-By default, the GUI loads the bundled TIFF DEM at `img/default_moon_dem.tif`,
-so a fresh clone starts with the same TIFF-based view.
+By default, the GUI loads a deterministic rugged lunar surface profile from
+`src/moon_gen/surfaces/full_2_rugged_static.py`, so each run starts with the
+same 3D terrain.
+
+The default startup profile is tuned for smoother interaction on mid-range
+hardware (`MOON_GEN_DEFAULT_GRID_SIZE=257` and
+`MOON_GEN_PATHFIND_MAX_GRID_DIMENSION=180` by default).
+
+If you want a different but still reproducible terrain, set a seed:
+```powershell
+$env:MOON_GEN_SEED=12345; python -m moon_gen
+```
+```bash
+MOON_GEN_SEED=12345 python -m moon_gen
+```
+
+You can still load the bundled TIFF DEM explicitly:
+```bash
+python -m moon_gen img/default_moon_dem.tif
+```
 
 For weaker laptops, you can cap preview resolution (while still loading large
 input TIFF files) with an environment variable:
@@ -33,6 +51,22 @@ $env:MOON_GEN_MAX_HEIGHTMAP_DIMENSION=512; python -m moon_gen
 ```
 ```bash
 MOON_GEN_MAX_HEIGHTMAP_DIMENSION=512 python -m moon_gen
+```
+
+You can also speed up mission path planning further:
+```powershell
+$env:MOON_GEN_PATHFIND_MAX_GRID_DIMENSION=140; python -m moon_gen
+```
+```bash
+MOON_GEN_PATHFIND_MAX_GRID_DIMENSION=140 python -m moon_gen
+```
+
+To make initial procedural terrain generation lighter:
+```powershell
+$env:MOON_GEN_DEFAULT_GRID_SIZE=225; python -m moon_gen
+```
+```bash
+MOON_GEN_DEFAULT_GRID_SIZE=225 python -m moon_gen
 ```
 
 If you have a large external DEM (for example
