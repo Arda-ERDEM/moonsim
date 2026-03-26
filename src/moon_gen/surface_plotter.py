@@ -8,6 +8,7 @@ import sys
 import logging
 import importlib
 import heapq
+from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING
 
@@ -24,6 +25,8 @@ else:
 from moon_gen.lib.utils import SurfaceFunctionType, SurfaceType
 from moon_gen.planning.main import plan_mission, generate_all_candidates
 from moon_gen.planning import config as planning_config
+
+
 
 
 class _StdoutBridge(QtCore.QObject):
@@ -50,14 +53,14 @@ class SurfacePlotter(QtWidgets.QFrame):
 
     _MAX_HEIGHTMAP_DIMENSION = max(
         64,
-        int(os.environ.get('MOON_GEN_MAX_HEIGHTMAP_DIMENSION', '768'))
+        min(512, int(os.environ.get('MOON_GEN_MAX_HEIGHTMAP_DIMENSION', '512')))
     )
     _HEIGHTMAP_CLIP_LOW_PERCENTILE = 1.0
     _HEIGHTMAP_CLIP_HIGH_PERCENTILE = 99.0
     _HEIGHTMAP_GAMMA = 0.9
     _PATHFIND_MAX_GRID_DIMENSION = max(
         64,
-        int(os.environ.get('MOON_GEN_PATHFIND_MAX_GRID_DIMENSION', '180'))
+        min(200, int(os.environ.get('MOON_GEN_PATHFIND_MAX_GRID_DIMENSION', '180')))
     )
 
     def __init__(self, parent=None):
@@ -520,6 +523,8 @@ class SurfacePlotter(QtWidgets.QFrame):
             hazard = self._buildHazardMap(z)
             self._missionHazardMap = hazard
 
+        # `_PATHFIND_MAX_GRID_DIMENSION` caps the effective A* grid size; `stride`
+        # auto-downsamples the hazard grid so A* stays fast even on larger maps.
         stride = max(
             1,
             int(np.ceil(max(nx, ny) / self._PATHFIND_MAX_GRID_DIMENSION))
@@ -628,21 +633,156 @@ class SurfacePlotter(QtWidgets.QFrame):
 
         return dense_path
 
+    def _load_obj(self, filepath):
+        import numpy as np
+        vertices = []
+        faces = []
+        try:
+            with open(filepath, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith('v '):
+                        parts = line.split()
+                        vertices.append([float(parts[1]), float(parts[2]), float(parts[3])])
+                    elif line.startswith('f '):
+                        parts = line.split()[1:]
+                        face_v = []
+                        for p in parts:
+                            val = p.split('/')[0]
+                            if val:
+                                idx = int(val)
+                                if idx < 0:
+                                    idx = len(vertices) + idx
+                                else:
+                                    idx -= 1
+                                face_v.append(idx)
+                        # Çokgenleri üçgenlere böl
+                        for i in range(1, len(face_v) - 1):
+                            faces.append([face_v[0], face_v[i], face_v[i+1]])
+            
+            verts_array = np.array(vertices, dtype=np.float32)
+            faces_array = np.array(faces, dtype=np.uint32)
+            
+            # Only center the vertices, don't normalize scale
+            if len(verts_array) > 0:
+                center = verts_array.mean(axis=0)
+                verts_array = verts_array - center
+                print(f"[OBJ Parser] {len(verts_array)} vertices, {len(faces_array)} faces, centered")
+            
+            return verts_array, faces_array
+        except Exception as e:
+            print(f"OBJ yükleme hatası: {e}")
+            return None, None
+
+    def _create_rover_mesh(self):
+        """Create a simple 6-wheeled rover mesh programmatically."""
+        import numpy as np
+        
+        vertices = []
+        faces = []
+        
+        # Body: rectangular box (0.4 x 0.2 x 0.15 units)
+        body_verts = [
+            [-0.2, -0.1, 0.0], [0.2, -0.1, 0.0], [0.2, 0.1, 0.0], [-0.2, 0.1, 0.0],  # bottom
+            [-0.2, -0.1, 0.15], [0.2, -0.1, 0.15], [0.2, 0.1, 0.15], [-0.2, 0.1, 0.15],  # top
+        ]
+        vertices.extend(body_verts)
+        
+        # Body faces (triangulated cube)
+        body_faces = [
+            [0, 1, 2], [0, 2, 3],  # bottom
+            [4, 6, 5], [4, 7, 6],  # top
+            [0, 4, 5], [0, 5, 1],  # front
+            [2, 6, 7], [2, 7, 3],  # back
+            [0, 3, 7], [0, 7, 4],  # left
+            [1, 5, 6], [1, 6, 2],  # right
+        ]
+        faces.extend(body_faces)
+        
+        # Wheels: 6 cylinders on surface level (z = 0)
+        # Positions: 3 on each side, front/middle/rear
+        wheel_positions = [
+            # Left side (y = -0.15)
+            (-0.15, -0.15, 0.0),
+            (0.0, -0.15, 0.0),
+            (0.15, -0.15, 0.0),
+            # Right side (y = 0.15)
+            (-0.15, 0.15, 0.0),
+            (0.0, 0.15, 0.0),
+            (0.15, 0.15, 0.0),
+        ]
+        
+        wheel_radius = 0.08
+        
+        for pos in wheel_positions:
+            # Simple wheel: octagon prism
+            base_idx = len(vertices)
+            theta = np.linspace(0, 2*np.pi, 8, endpoint=False)
+            
+            # Front face
+            for t in theta:
+                vx = pos[0] + wheel_radius * np.cos(t)
+                vy = pos[1]
+                vz = pos[2] + wheel_radius * np.sin(t)
+                vertices.append([vx, vy, vz])
+            
+            # Back face (depth = 0.06)
+            for t in theta:
+                vx = pos[0] + wheel_radius * np.cos(t)
+                vy = pos[1] + 0.06
+                vz = pos[2] + wheel_radius * np.sin(t)
+                vertices.append([vx, vy, vz])
+            
+            # Wheel faces
+            n = 8
+            for i in range(n):
+                # Front ring
+                faces.append([base_idx + i, base_idx + (i+1)%n, base_idx + n + (i+1)%n])
+                faces.append([base_idx + i, base_idx + n + (i+1)%n, base_idx + n + i])
+        
+        verts_array = np.array(vertices, dtype=np.float32)
+        faces_array = np.array(faces, dtype=np.uint32)
+        
+        return gl.MeshData(vertexes=verts_array, faces=faces_array)
+
     def _setRoverPosition(self, point: np.ndarray):
         if self._roverItem is None:
             x, y, z, *c = self._surfaceData
             radius = 0.01 * max(np.ptp(x), np.ptp(y))
-            mesh = gl.MeshData.sphere(rows=10, cols=16, radius=radius)
+            
+            # Try to load OBJ first, fallback to programmatic rover
+            mesh = None
+            try:
+                verts, faces = self._load_obj('models/rover.obj')
+                if verts is not None and len(verts) > 0 and faces is not None and len(faces) > 0:
+                    max_idx = np.max(faces)
+                    if max_idx < len(verts):
+                        mesh = gl.MeshData(vertexes=verts, faces=faces)
+                        print(f"[Rover] OBJ loaded successfully")
+            except Exception as e:
+                print(f"[Rover] OBJ load failed ({e})")
+            
+            # Fallback to programmatic 6-wheel rover
+            if mesh is None:
+                mesh = self._create_rover_mesh()
+                print(f"[Rover] Using programmatic 6-wheel rover")
+            
             self._roverItem = gl.GLMeshItem(
                 meshdata=mesh,
                 smooth=True,
-                color=(0.05, 0.85, 1.0, 0.95),
+                color=(0.8, 0.2, 0.1, 1.0),
                 shader='shaded',
                 glOptions='opaque'
             )
+            
+            # Scale (küçültüldü: 5x yerine 20x)
+            self._roverItem.scale(radius * 5, radius * 5, radius * 5)
             self.vw.addItem(self._roverItem)
 
         self._roverItem.resetTransform()
+        x, y, z, *c = self._surfaceData
+        radius = 0.01 * max(np.ptp(x), np.ptp(y))
+        self._roverItem.scale(radius * 5, radius * 5, radius * 5)
         self._roverItem.translate(float(point[0]), float(point[1]), float(point[2]))
 
     def planMissionPath(self):
@@ -1079,7 +1219,7 @@ class SurfacePlotter(QtWidgets.QFrame):
                 normalized = zz / 255.0
                 h, w = normalized.shape
 
-            default_x_range = 20.0
+            default_x_range = 100.0
             default_y_range = default_x_range / w * h
             default_z_range = 1.0
 
@@ -1115,6 +1255,14 @@ class SurfacePlotter(QtWidgets.QFrame):
             self._surfaceData = x, y, z
             x, y, z = self._surfaceData
             self.surf.setData(x=x, y=y, z=z)
+            # Frame the full terrain in the 3D view after loading the heightmap.
+            map_diag = float(np.hypot(x_range, y_range))
+            self.vw.setCameraPosition(
+                distance=1.4 * map_diag,
+                elevation=45,
+                azimuth=-45,
+                center=(0.0, 0.0, float(np.mean(z))),
+            )
             self._module = None
 
             self.setToolTip(os.path.basename(filename))
