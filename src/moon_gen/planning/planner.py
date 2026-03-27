@@ -30,10 +30,10 @@ def astar_plan(
 ) -> PathResult:
     """
     Plan a path using Theta* (Any-Angle Pathfinding).
-    
+
     This function maintains the original interface while using the advanced Theta*
     algorithm for smooth trajectory generation.
-    
+
     Args:
         cost_map: 2D array of traversal costs
         blocked: 2D binary array indicating obstacles

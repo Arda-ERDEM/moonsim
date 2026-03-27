@@ -27,8 +27,6 @@ from moon_gen.planning.main import plan_mission, generate_all_candidates
 from moon_gen.planning import config as planning_config
 
 
-
-
 class _StdoutBridge(QtCore.QObject):
     text_emitted = QtCore.pyqtSignal(str)
 
@@ -83,12 +81,15 @@ class SurfacePlotter(QtWidgets.QFrame):
         self._mapImageItem: pg.ImageItem | None = None
         self._mapWaypointScatter: pg.ScatterPlotItem | None = None
         self._mapZoomLevel: float = 1.0  # Track zoom state
-        self._mapInitialBounds: tuple[float, float, float, float] | None = None  # (x_min, x_max, y_min, y_max)
+        # (x_min, x_max, y_min, y_max)
+        self._mapInitialBounds: tuple[float, float, float, float] | None = None
         self._mapZoomLabel: QtWidgets.QLabel | None = None
 
         # NEW: Multi-route selection system
-        self._candidate_routes: dict[str, dict] = {}  # {safe/eco/fast: {path, cost, etc}}
-        self._candidate_path_items: dict[str, gl.GLLinePlotItem] = {}  # For visualization
+        # {safe/eco/fast: {path, cost, etc}}
+        self._candidate_routes: dict[str, dict] = {}
+        # For visualization
+        self._candidate_path_items: dict[str, gl.GLLinePlotItem] = {}
         self._current_selected_mode: str | None = None  # Currently selected route
         self._mission_data: dict | None = None  # Full mission data from planner
         self._consoleWidget: QtWidgets.QPlainTextEdit | None = None
@@ -183,13 +184,16 @@ class SurfacePlotter(QtWidgets.QFrame):
         self._mapPlot.wheelEvent = self._mapPlotWheelEvent  # Override wheel for zoom
         planner_layout.addWidget(self._mapPlot)
 
-        self._startCoordLabel = QtWidgets.QLabel('Start: not selected', planner_tab)
-        self._endCoordLabel = QtWidgets.QLabel('End: not selected', planner_tab)
+        self._startCoordLabel = QtWidgets.QLabel(
+            'Start: not selected', planner_tab)
+        self._endCoordLabel = QtWidgets.QLabel(
+            'End: not selected', planner_tab)
         planner_layout.addWidget(self._startCoordLabel)
         planner_layout.addWidget(self._endCoordLabel)
 
         pick_row = QtWidgets.QHBoxLayout()
-        self._pickStartButton = QtWidgets.QPushButton('Pick Start', planner_tab)
+        self._pickStartButton = QtWidgets.QPushButton(
+            'Pick Start', planner_tab)
         self._pickStartButton.clicked.connect(self._activateStartPick)
         self._pickEndButton = QtWidgets.QPushButton('Pick End', planner_tab)
         self._pickEndButton.clicked.connect(self._activateEndPick)
@@ -220,11 +224,13 @@ class SurfacePlotter(QtWidgets.QFrame):
         planner_layout.addLayout(form)
 
         button_row = QtWidgets.QHBoxLayout()
-        self._clearWaypointsButton = QtWidgets.QPushButton('Clear Points', planner_tab)
+        self._clearWaypointsButton = QtWidgets.QPushButton(
+            'Clear Points', planner_tab)
         self._clearWaypointsButton.clicked.connect(self._clearWaypoints)
         self._swapWaypointsButton = QtWidgets.QPushButton('Swap', planner_tab)
         self._swapWaypointsButton.clicked.connect(self._swapWaypoints)
-        self._planMissionButton = QtWidgets.QPushButton('Plan Path', planner_tab)
+        self._planMissionButton = QtWidgets.QPushButton(
+            'Plan Path', planner_tab)
         self._planMissionButton.clicked.connect(self.planMissionPath)
         button_row.addWidget(self._clearWaypointsButton)
         button_row.addWidget(self._swapWaypointsButton)
@@ -232,7 +238,8 @@ class SurfacePlotter(QtWidgets.QFrame):
         planner_layout.addLayout(button_row)
 
         mission_row = QtWidgets.QHBoxLayout()
-        self._startMissionButton = QtWidgets.QPushButton('Start Rover', planner_tab)
+        self._startMissionButton = QtWidgets.QPushButton(
+            'Start Rover', planner_tab)
         self._startMissionButton.clicked.connect(self.startRoverMission)
         self._stopMissionButton = QtWidgets.QPushButton('Stop', planner_tab)
         self._stopMissionButton.clicked.connect(self.stopRoverMission)
@@ -246,27 +253,31 @@ class SurfacePlotter(QtWidgets.QFrame):
         planner_layout.addWidget(route_selection_label)
 
         route_buttons_row = QtWidgets.QHBoxLayout()
-        
+
         self._buttonSafe = QtWidgets.QPushButton('SAFE', planner_tab)
-        self._buttonSafe.setStyleSheet("color: white; background-color: #2ecc71; font-weight: bold;")
+        self._buttonSafe.setStyleSheet(
+            "color: white; background-color: #2ecc71; font-weight: bold;")
         self._buttonSafe.clicked.connect(lambda: self._selectRoute('safe'))
         self._buttonSafe.setEnabled(False)
-        
+
         self._buttonEco = QtWidgets.QPushButton('ECO', planner_tab)
-        self._buttonEco.setStyleSheet("color: white; background-color: #f1c40f; font-weight: bold;")
+        self._buttonEco.setStyleSheet(
+            "color: white; background-color: #f1c40f; font-weight: bold;")
         self._buttonEco.clicked.connect(lambda: self._selectRoute('eco'))
         self._buttonEco.setEnabled(False)
-        
+
         self._buttonFast = QtWidgets.QPushButton('FAST', planner_tab)
-        self._buttonFast.setStyleSheet("color: white; background-color: #e74c3c; font-weight: bold;")
+        self._buttonFast.setStyleSheet(
+            "color: white; background-color: #e74c3c; font-weight: bold;")
         self._buttonFast.clicked.connect(lambda: self._selectRoute('fast'))
         self._buttonFast.setEnabled(False)
-        
+
         self._buttonAuto = QtWidgets.QPushButton('AUTO', planner_tab)
-        self._buttonAuto.setStyleSheet("color: white; background-color: #3498db; font-weight: bold;")
+        self._buttonAuto.setStyleSheet(
+            "color: white; background-color: #3498db; font-weight: bold;")
         self._buttonAuto.clicked.connect(self._selectRouteAuto)
         self._buttonAuto.setEnabled(False)
-        
+
         route_buttons_row.addWidget(self._buttonSafe)
         route_buttons_row.addWidget(self._buttonEco)
         route_buttons_row.addWidget(self._buttonFast)
@@ -280,7 +291,8 @@ class SurfacePlotter(QtWidgets.QFrame):
         self._consoleWidget = QtWidgets.QPlainTextEdit(planner_tab)
         self._consoleWidget.setReadOnly(True)
         self._consoleWidget.setMinimumHeight(140)
-        self._consoleWidget.setPlaceholderText('Planner terminal output will appear here in real-time...')
+        self._consoleWidget.setPlaceholderText(
+            'Planner terminal output will appear here in real-time...')
         planner_layout.addWidget(self._consoleWidget)
 
         self._missionStatusLabel = QtWidgets.QLabel(
@@ -362,7 +374,8 @@ class SurfacePlotter(QtWidgets.QFrame):
         self._buttonFast.setEnabled(False)
         self._buttonAuto.setEnabled(False)
 
-        self._setMissionStatus('Waypoints cleared. Pick START then END on map.')
+        self._setMissionStatus(
+            'Waypoints cleared. Pick START then END on map.')
 
     def _refreshWaypointLabels(self):
         if self._startWaypoint is None:
@@ -419,11 +432,13 @@ class SurfacePlotter(QtWidgets.QFrame):
         if self._nextPickTarget == 'start':
             self._startWaypoint = (x_val, y_val)
             self._nextPickTarget = 'end'
-            self._setMissionStatus('Start selected. Click to choose END waypoint.')
+            self._setMissionStatus(
+                'Start selected. Click to choose END waypoint.')
         else:
             self._endWaypoint = (x_val, y_val)
             self._nextPickTarget = 'start'
-            self._setMissionStatus('End selected. Click Plan Path to generate route.')
+            self._setMissionStatus(
+                'End selected. Click Plan Path to generate route.')
 
         self._refreshWaypointLabels()
         self._refreshMapWaypointOverlay()
@@ -443,7 +458,8 @@ class SurfacePlotter(QtWidgets.QFrame):
 
         z_view = np.asarray(z.T, dtype=float)
         self._mapImageItem.setImage(z_view, autoLevels=True)
-        self._mapImageItem.setRect(QtCore.QRectF(x_min, y_min, np.ptp(x), np.ptp(y)))
+        self._mapImageItem.setRect(QtCore.QRectF(
+            x_min, y_min, np.ptp(x), np.ptp(y)))
 
         self._mapPlot.setXRange(x_min, x_max, padding=0.0)
         self._mapPlot.setYRange(y_min, y_max, padding=0.0)
@@ -474,12 +490,13 @@ class SurfacePlotter(QtWidgets.QFrame):
         # Determine zoom direction
         delta = ev.angleDelta().y()
         zoom_factor = 0.85 if delta > 0 else 1.18
-        
+
         # Apply scaling with limits
         new_zoom = self._mapZoomLevel * zoom_factor
         if 0.2 <= new_zoom <= 5.0:
             self._mapZoomLevel = new_zoom
-            vb.scaleBy((1/zoom_factor, 1/zoom_factor), center=vb.mapSceneToView(ev.position()))
+            vb.scaleBy((1/zoom_factor, 1/zoom_factor),
+                       center=vb.mapSceneToView(ev.position()))
             self._updateMapZoomLabel()
 
     def _mapZoomIn(self):
@@ -487,7 +504,7 @@ class SurfacePlotter(QtWidgets.QFrame):
         vb = self._mapPlot.getViewBox()
         if vb is None:
             return
-        
+
         new_zoom = min(self._mapZoomLevel * 0.7, 5.0)
         zoom_factor = self._mapZoomLevel / new_zoom if new_zoom != 0 else 1.0
         self._mapZoomLevel = new_zoom
@@ -499,7 +516,7 @@ class SurfacePlotter(QtWidgets.QFrame):
         vb = self._mapPlot.getViewBox()
         if vb is None:
             return
-        
+
         new_zoom = max(self._mapZoomLevel * 1.43, 0.2)
         zoom_factor = self._mapZoomLevel / new_zoom if new_zoom != 0 else 1.0
         self._mapZoomLevel = new_zoom
@@ -510,7 +527,7 @@ class SurfacePlotter(QtWidgets.QFrame):
         """Reset map view to initial bounds with animation."""
         if self._mapInitialBounds is None:
             return
-        
+
         x_min, x_max, y_min, y_max = self._mapInitialBounds
         self._mapPlot.setXRange(x_min, x_max, padding=0.0)
         self._mapPlot.setYRange(y_min, y_max, padding=0.0)
@@ -548,7 +565,8 @@ class SurfacePlotter(QtWidgets.QFrame):
         self.grid.setSize(x=x_span, y=y_span, z=0.0)
         self.grid.setSpacing(x=x_spacing, y=y_spacing, z=1.0)
         # Anchor grid at terrain floor so surface rises from the grid with no base gap.
-        self.grid.translate(0.5 * (x_min + x_max), 0.5 * (y_min + y_max), z_min)
+        self.grid.translate(0.5 * (x_min + x_max),
+                            0.5 * (y_min + y_max), z_min)
 
     def _frameSurfaceCamera(self):
         x, y, z, *c = self._surfaceData
@@ -605,7 +623,8 @@ class SurfacePlotter(QtWidgets.QFrame):
         self._updateDisplayGrid()
         self._frameSurfaceCamera()
         self._updateWaypointRanges()
-        self._setMissionStatus('Surface ready. Define two waypoints and plan mission.')
+        self._setMissionStatus(
+            'Surface ready. Define two waypoints and plan mission.')
 
     def _swapWaypoints(self):
         self._startWaypoint, self._endWaypoint = self._endWaypoint, self._startWaypoint
@@ -695,7 +714,8 @@ class SurfacePlotter(QtWidgets.QFrame):
         frontier: list[tuple[float, tuple[int, int]]] = []
         heapq.heappush(frontier, (0.0, start_idx))
 
-        came_from: dict[tuple[int, int], tuple[int, int] | None] = {start_idx: None}
+        came_from: dict[tuple[int, int],
+                        tuple[int, int] | None] = {start_idx: None}
         cost_so_far: dict[tuple[int, int], float] = {start_idx: 0.0}
 
         max_expansions = min(nx * ny, 120_000)
@@ -772,7 +792,8 @@ class SurfacePlotter(QtWidgets.QFrame):
                     line = line.strip()
                     if line.startswith('v '):
                         parts = line.split()
-                        vertices.append([float(parts[1]), float(parts[2]), float(parts[3])])
+                        vertices.append(
+                            [float(parts[1]), float(parts[2]), float(parts[3])])
                     elif line.startswith('f '):
                         parts = line.split()[1:]
                         face_v = []
@@ -788,16 +809,17 @@ class SurfacePlotter(QtWidgets.QFrame):
                         # Çokgenleri üçgenlere böl
                         for i in range(1, len(face_v) - 1):
                             faces.append([face_v[0], face_v[i], face_v[i+1]])
-            
+
             verts_array = np.array(vertices, dtype=np.float32)
             faces_array = np.array(faces, dtype=np.uint32)
-            
+
             # Only center the vertices, don't normalize scale
             if len(verts_array) > 0:
                 center = verts_array.mean(axis=0)
                 verts_array = verts_array - center
-                print(f"[OBJ Parser] {len(verts_array)} vertices, {len(faces_array)} faces, centered")
-            
+                print(
+                    f"[OBJ Parser] {len(verts_array)} vertices, {len(faces_array)} faces, centered")
+
             return verts_array, faces_array
         except Exception as e:
             print(f"OBJ yükleme hatası: {e}")
@@ -806,17 +828,21 @@ class SurfacePlotter(QtWidgets.QFrame):
     def _create_rover_mesh(self):
         """Create a simple 6-wheeled rover mesh programmatically."""
         import numpy as np
-        
+
         vertices = []
         faces = []
-        
+
         # Body: rectangular box (0.4 x 0.2 x 0.15 units)
         body_verts = [
-            [-0.2, -0.1, 0.0], [0.2, -0.1, 0.0], [0.2, 0.1, 0.0], [-0.2, 0.1, 0.0],  # bottom
-            [-0.2, -0.1, 0.15], [0.2, -0.1, 0.15], [0.2, 0.1, 0.15], [-0.2, 0.1, 0.15],  # top
+            [-0.2, -0.1, 0.0], [0.2, -0.1, 0.0], [0.2,
+                                                  # bottom
+                                                  0.1, 0.0], [-0.2, 0.1, 0.0],
+            [-0.2, -0.1, 0.15], [0.2, -0.1, 0.15], [0.2,
+                                                    # top
+                                                    0.1, 0.15], [-0.2, 0.1, 0.15],
         ]
         vertices.extend(body_verts)
-        
+
         # Body faces (triangulated cube)
         body_faces = [
             [0, 1, 2], [0, 2, 3],  # bottom
@@ -827,7 +853,7 @@ class SurfacePlotter(QtWidgets.QFrame):
             [1, 5, 6], [1, 6, 2],  # right
         ]
         faces.extend(body_faces)
-        
+
         # Wheels: 6 cylinders on surface level (z = 0)
         # Positions: 3 on each side, front/middle/rear
         wheel_positions = [
@@ -840,45 +866,47 @@ class SurfacePlotter(QtWidgets.QFrame):
             (0.0, 0.15, 0.0),
             (0.15, 0.15, 0.0),
         ]
-        
+
         wheel_radius = 0.08
-        
+
         for pos in wheel_positions:
             # Simple wheel: octagon prism
             base_idx = len(vertices)
             theta = np.linspace(0, 2*np.pi, 8, endpoint=False)
-            
+
             # Front face
             for t in theta:
                 vx = pos[0] + wheel_radius * np.cos(t)
                 vy = pos[1]
                 vz = pos[2] + wheel_radius * np.sin(t)
                 vertices.append([vx, vy, vz])
-            
+
             # Back face (depth = 0.06)
             for t in theta:
                 vx = pos[0] + wheel_radius * np.cos(t)
                 vy = pos[1] + 0.06
                 vz = pos[2] + wheel_radius * np.sin(t)
                 vertices.append([vx, vy, vz])
-            
+
             # Wheel faces
             n = 8
             for i in range(n):
                 # Front ring
-                faces.append([base_idx + i, base_idx + (i+1)%n, base_idx + n + (i+1)%n])
-                faces.append([base_idx + i, base_idx + n + (i+1)%n, base_idx + n + i])
-        
+                faces.append([base_idx + i, base_idx + (i+1) %
+                             n, base_idx + n + (i+1) % n])
+                faces.append([base_idx + i, base_idx + n + (i+1) %
+                             n, base_idx + n + i])
+
         verts_array = np.array(vertices, dtype=np.float32)
         faces_array = np.array(faces, dtype=np.uint32)
-        
+
         return gl.MeshData(vertexes=verts_array, faces=faces_array)
 
     def _setRoverPosition(self, point: np.ndarray):
         if self._roverItem is None:
             x, y, z, *c = self._surfaceData
             radius = 0.01 * max(np.ptp(x), np.ptp(y))
-            
+
             # Try to load OBJ first, fallback to programmatic rover
             mesh = None
             try:
@@ -890,12 +918,12 @@ class SurfacePlotter(QtWidgets.QFrame):
                         print(f"[Rover] OBJ loaded successfully")
             except Exception as e:
                 print(f"[Rover] OBJ load failed ({e})")
-            
+
             # Fallback to programmatic 6-wheel rover
             if mesh is None:
                 mesh = self._create_rover_mesh()
                 print(f"[Rover] Using programmatic 6-wheel rover")
-            
+
             self._roverItem = gl.GLMeshItem(
                 meshdata=mesh,
                 smooth=True,
@@ -903,7 +931,7 @@ class SurfacePlotter(QtWidgets.QFrame):
                 shader='shaded',
                 glOptions='opaque'
             )
-            
+
             # Scale (küçültüldü: 5x yerine 20x)
             self._roverItem.scale(radius * 5, radius * 5, radius * 5)
             self.vw.addItem(self._roverItem)
@@ -912,16 +940,20 @@ class SurfacePlotter(QtWidgets.QFrame):
         x, y, z, *c = self._surfaceData
         radius = 0.01 * max(np.ptp(x), np.ptp(y))
         self._roverItem.scale(radius * 5, radius * 5, radius * 5)
-        self._roverItem.translate(float(point[0]), float(point[1]), float(point[2]))
+        self._roverItem.translate(
+            float(point[0]), float(point[1]), float(point[2]))
 
     def planMissionPath(self):
         if self._startWaypoint is None or self._endWaypoint is None:
-            self._setMissionStatus('Pick both START and END waypoint on map first.')
+            self._setMissionStatus(
+                'Pick both START and END waypoint on map first.')
             return
 
         x, y, z, *c = self._surfaceData
-        start_idx = self._xyToGridIndex(self._startWaypoint[0], self._startWaypoint[1])
-        end_idx = self._xyToGridIndex(self._endWaypoint[0], self._endWaypoint[1])
+        start_idx = self._xyToGridIndex(
+            self._startWaypoint[0], self._startWaypoint[1])
+        end_idx = self._xyToGridIndex(
+            self._endWaypoint[0], self._endWaypoint[1])
 
         if start_idx == end_idx:
             self._setMissionStatus('Start and end waypoint are the same.')
@@ -929,15 +961,17 @@ class SurfacePlotter(QtWidgets.QFrame):
 
         # Override planning config with UI values
         planning_config.SAFE_WEIGHTS['slope'] = self._slopeSpin.value() * 2.0
-        planning_config.SAFE_WEIGHTS['obstacle'] = self._avoidanceSpin.value() * 2.0
-        
-        self._setMissionStatus('Generating all three candidate routes (Safe, Eco, Fast)...')
+        planning_config.SAFE_WEIGHTS['obstacle'] = self._avoidanceSpin.value(
+        ) * 2.0
+
+        self._setMissionStatus(
+            'Generating all three candidate routes (Safe, Eco, Fast)...')
         QtWidgets.QApplication.processEvents()
 
         try:
             # IMPORT the new function from planning.main
             from moon_gen.planning.main import generate_all_candidates
-            
+
             grid_dx = float(np.ptp(x) / max(len(x) - 1, 1))
             grid_dy = float(np.ptp(y) / max(len(y) - 1, 1))
             cell_size = 0.5 * (grid_dx + grid_dy)
@@ -957,46 +991,49 @@ class SurfacePlotter(QtWidgets.QFrame):
         # Store the mission data
         self._mission_data = result
         plans = result.get('plans', {})
-        
+
         # Ensure all three routes exist
-        valid_modes = [m for m in ('safe', 'eco', 'fast') if m in plans and plans[m]['summary']['exists']]
+        valid_modes = [m for m in ('safe', 'eco', 'fast')
+                       if m in plans and plans[m]['summary']['exists']]
         if not valid_modes:
-            self._setMissionStatus('No valid routes found. Adjust terrain avoidance weights.')
+            self._setMissionStatus(
+                'No valid routes found. Adjust terrain avoidance weights.')
             return
 
         # Clear previous route visualization
         self._clearRouteVisualization()
-        
+
         # Generate and visualize all three routes
         self._candidate_routes = {}
-        colors = {'safe': (0.2, 0.9, 0.4, 1.0), 'eco': (0.2, 0.5, 0.9, 1.0), 'fast': (0.9, 0.3, 0.2, 1.0)}
-        
+        colors = {'safe': (0.2, 0.9, 0.4, 1.0), 'eco': (
+            0.2, 0.5, 0.9, 1.0), 'fast': (0.9, 0.3, 0.2, 1.0)}
+
         for mode in ('safe', 'eco', 'fast'):
             if mode not in plans:
                 continue
-                
+
             plan = plans[mode]
             summary = plan['summary']
-            
+
             if not summary['exists']:
                 continue
-            
+
             # Get the path
             path_result = plan['result']
             path_indices = path_result.smoothed_path if path_result.smoothed_path else path_result.path
-            
+
             # Convert to 3D points
             points = []
             for r, c in path_indices:
                 r = int(np.clip(r, 0, z.shape[0]-1))
                 c = int(np.clip(c, 0, z.shape[1]-1))
                 points.append(self._gridIndexToPoint(r, c))
-            
+
             if not points:
                 continue
-                
+
             path_points = np.vstack(points)
-            
+
             # Store route data
             self._candidate_routes[mode] = {
                 'path_points': path_points,
@@ -1004,7 +1041,7 @@ class SurfacePlotter(QtWidgets.QFrame):
                 'summary': summary,
                 'line_item': None,
             }
-            
+
             # Draw the route (not highlighted yet)
             color = colors.get(mode, (1, 1, 1, 1))
             line_item = gl.GLLinePlotItem(
@@ -1025,16 +1062,19 @@ class SurfacePlotter(QtWidgets.QFrame):
         for mode in ('safe', 'eco', 'fast'):
             if mode in self._candidate_routes:
                 summary = self._candidate_routes[mode]['summary']
-                print(f"{mode.upper():5} | Length: {summary['path_length']:6.1f} | Risk: {summary['mean_risk']:.3f} | Cost: {summary['path_cost']:8.2f}")
+                print(
+                    f"{mode.upper():5} | Length: {summary['path_length']:6.1f} | Risk: {summary['mean_risk']:.3f} | Cost: {summary['path_cost']:8.2f}")
 
         # Enable route selection buttons
         for btn_name in ('safe', 'eco', 'fast'):
             if btn_name in self._candidate_routes:
-                getattr(self, f'_button{btn_name.capitalize()}').setEnabled(True)
+                getattr(self, f'_button{btn_name.capitalize()}').setEnabled(
+                    True)
         self._buttonAuto.setEnabled(True)
 
         # Update status
-        self._setMissionStatus('All routes GENERATED. Click SAFE, ECO, FAST, or AUTO to select.')
+        self._setMissionStatus(
+            'All routes GENERATED. Click SAFE, ECO, FAST, or AUTO to select.')
         self._current_selected_mode = None
 
     def _clearRouteVisualization(self):
@@ -1080,7 +1120,8 @@ class SurfacePlotter(QtWidgets.QFrame):
             self._setMissionStatus(status_msg)
             print(f"[SELECTION] User selected {mode.upper()} route")
         except Exception as exc:
-            self._logger.error(f"Route selection failed for {mode}: {exc}", exc_info=True)
+            self._logger.error(
+                f"Route selection failed for {mode}: {exc}", exc_info=True)
             self._setMissionStatus(f"{mode.upper()} selection failed: {exc}")
 
     def _selectRouteAuto(self):
@@ -1101,16 +1142,19 @@ class SurfacePlotter(QtWidgets.QFrame):
             }
 
             if not candidate_summaries:
-                self._setMissionStatus('No routes available for AUTO selection.')
+                self._setMissionStatus(
+                    'No routes available for AUTO selection.')
                 return
 
             # Use the decision logic
             from moon_gen.planning.decision import select_autonomous_mode
 
-            selected_mode, explanation = select_autonomous_mode(candidate_summaries, mission)
+            selected_mode, explanation = select_autonomous_mode(
+                candidate_summaries, mission)
 
             if not selected_mode or selected_mode not in self._candidate_routes:
-                self._setMissionStatus('AUTO failed to select an executable route.')
+                self._setMissionStatus(
+                    'AUTO failed to select an executable route.')
                 return
 
             # Highlight explanation
@@ -1147,29 +1191,32 @@ class SurfacePlotter(QtWidgets.QFrame):
 
     def _updateRouteHighlight(self, selected_mode: str):
         """Update line widths/colors to highlight the selected route."""
-        colors = {'safe': (0.2, 0.9, 0.4, 1.0), 'eco': (0.2, 0.5, 0.9, 1.0), 'fast': (0.9, 0.3, 0.2, 1.0)}
-        
+        colors = {'safe': (0.2, 0.9, 0.4, 1.0), 'eco': (
+            0.2, 0.5, 0.9, 1.0), 'fast': (0.9, 0.3, 0.2, 1.0)}
+
         for mode in ('safe', 'eco', 'fast'):
             if mode not in self._candidate_routes:
                 continue
-                
+
             line_item = self._candidate_routes[mode]['line_item']
             if line_item is None:
                 continue
-            
+
             # Selected route: thicker, full opacity
             # Other routes: thinner, slightly dimmed
             if mode == selected_mode:
                 line_item.setData(width=4.0, color=colors[mode])
             else:
                 # Dim non-selected routes
-                dim_color = tuple(c * 0.5 + 0.2 for c in colors[mode][:3]) + (0.6,)
+                dim_color = tuple(
+                    c * 0.5 + 0.2 for c in colors[mode][:3]) + (0.6,)
                 line_item.setData(width=1.5, color=dim_color)
 
     def startRoverMission(self):
         if self._plannedPath is None or len(self._plannedPath) < 2:
             if not self._current_selected_mode:
-                self._setMissionStatus('No route selected. Generate paths and select SAFE, ECO, FAST, or AUTO.')
+                self._setMissionStatus(
+                    'No route selected. Generate paths and select SAFE, ECO, FAST, or AUTO.')
                 return
 
         if self._plannedPath is None or len(self._plannedPath) < 2:
@@ -1197,7 +1244,8 @@ class SurfacePlotter(QtWidgets.QFrame):
 
         if self._roverPathCursor >= len(self._plannedPath) - 1:
             self.stopRoverMission()
-            self._setMissionStatus('Mission complete: rover reached end waypoint.')
+            self._setMissionStatus(
+                'Mission complete: rover reached end waypoint.')
 
     def minimumSizeHint(self) -> QtCore.QSize:
         return QtCore.QSize(100, 100)
@@ -1249,8 +1297,10 @@ class SurfacePlotter(QtWidgets.QFrame):
         if target_height < 1 or target_width < 1:
             return np.asarray(values, dtype=np.float32)
 
-        trimmed = values[:target_height * scale_factor, :target_width * scale_factor]
-        reshaped = trimmed.reshape(target_height, scale_factor, target_width, scale_factor)
+        trimmed = values[:target_height *
+                         scale_factor, :target_width * scale_factor]
+        reshaped = trimmed.reshape(
+            target_height, scale_factor, target_width, scale_factor)
         downsampled = reshaped.mean(axis=(1, 3))
 
         return np.asarray(downsampled, dtype=np.float32)
@@ -1392,7 +1442,8 @@ class SurfacePlotter(QtWidgets.QFrame):
             default_x_range = 1000.0
             default_y_range = 1000.0
             # Default exaggeration keeps TIFF relief visible at startup.
-            default_z_range = max(1.0, 0.12 * min(default_x_range, default_y_range))
+            default_z_range = max(
+                1.0, 0.12 * min(default_x_range, default_y_range))
 
             if prompt_user:
                 x_range, _ = QtWidgets.QInputDialog.getDouble(

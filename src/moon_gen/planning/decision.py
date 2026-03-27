@@ -40,7 +40,8 @@ def summarize_candidate(
     uncertainty = layers["uncertainty"][rr, cc]
 
     # Composite risk metric for the path
-    mean_risk = float(np.mean(0.35 * slope + 0.20 * roughness + 0.25 * obstacle + 0.20 * crater))
+    mean_risk = float(np.mean(0.35 * slope + 0.20 *
+                      roughness + 0.25 * obstacle + 0.20 * crater))
     mean_uncertainty = float(np.mean(uncertainty))
 
     turns = 0
@@ -83,12 +84,14 @@ def select_autonomous_mode(
     }
 
     if not valid_modes:
-        explanation["main_decision_factors"].append("No valid path in safe/eco/fast.")
+        explanation["main_decision_factors"].append(
+            "No valid path in safe/eco/fast.")
         return None, explanation
 
     # 1. Check constraints based on mission
     high_risk = mission.global_risk >= config.RISK_THRESHOLD
-    low_confidence = mission.mean_uncertainty >= (1.0 - config.CONFIDENCE_THRESHOLD)
+    low_confidence = mission.mean_uncertainty >= (
+        1.0 - config.CONFIDENCE_THRESHOLD)
     low_battery = mission.battery_level <= config.LOW_BATTERY_THRESHOLD
     time_critical = mission.time_priority >= config.TIME_PRIORITY_THRESHOLD
 
@@ -148,7 +151,8 @@ def select_autonomous_mode(
         )
 
     # Fill remainder
-    ranked_preferences += [m for m in ("safe", "eco", "fast") if m not in ranked_preferences]
+    ranked_preferences += [m for m in ("safe", "eco", "fast")
+                           if m not in ranked_preferences]
 
     # Select first valid
     selected_mode: str | None = None

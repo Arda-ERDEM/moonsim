@@ -8,7 +8,8 @@ from moon_gen.surfaces.full_2_rugged_static import surface
 def main() -> None:
     x, y, z = surface()
     xx, yy = np.meshgrid(x, y, indexing="ij")
-    points = np.column_stack((xx.ravel(), yy.ravel(), z.ravel())).astype(np.float32)
+    points = np.column_stack(
+        (xx.ravel(), yy.ravel(), z.ravel())).astype(np.float32)
 
     out = Path("exports")
     out.mkdir(exist_ok=True)

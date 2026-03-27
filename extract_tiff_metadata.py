@@ -2,7 +2,7 @@ import tifffile
 import os
 from pathlib import Path
 
- 
+
 tif_path = 'img/default_moon_dem.tif'
 print(f"Dosya: {tif_path}")
 print(f"Boyut: {os.path.getsize(tif_path)} byte")
@@ -14,11 +14,11 @@ with tifffile.TiffFile(tif_path) as tif:
     print(f"Görüntü boyutu: {arr.shape}")
     print(f"Veri tipi: {arr.dtype}")
     print(f"Min/Max değerler: {arr.min()} / {arr.max()}")
-    
+
     print("\n" + "="*70)
     print("TIFF PAGES VE TAGS:")
     print("="*70)
-    
+
     for page_idx, page in enumerate(tif.pages):
         print(f"\nSayfa {page_idx}:")
         if hasattr(page, 'tags'):
@@ -29,7 +29,7 @@ with tifffile.TiffFile(tif_path) as tif:
                 print("  Tag yok")
         else:
             print("  Tags özelliği yok")
-        
+
         # Page özellikleri
         print(f"  Shape: {page.asarray().shape}")
         print(f"  Dtype: {page.asarray().dtype}")

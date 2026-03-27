@@ -84,7 +84,8 @@ def load_lunar_image(image_path: str | Path | None = None) -> tuple[np.ndarray, 
             break
 
     if selected is None:
-        raise FileNotFoundError("No lunar input image found in configured candidates")
+        raise FileNotFoundError(
+            "No lunar input image found in configured candidates")
 
     suffix = selected.suffix.casefold()
     if suffix in (".tif", ".tiff"):
@@ -143,8 +144,10 @@ def compute_terrain_layers(image: np.ndarray) -> LayerMap:
     obstacle_signal = 0.65 * slope + 0.35 * roughness
     threshold = np.percentile(obstacle_signal, config.OBSTACLE_PERCENTILE)
     obstacle_mask = obstacle_signal >= threshold
-    obstacle_mask = binary_dilation(obstacle_mask, iterations=config.OBSTACLE_DILATION_ITERS)
-    obstacle_mask = binary_closing(obstacle_mask, iterations=config.OBSTACLE_CLOSE_ITERS)
+    obstacle_mask = binary_dilation(
+        obstacle_mask, iterations=config.OBSTACLE_DILATION_ITERS)
+    obstacle_mask = binary_closing(
+        obstacle_mask, iterations=config.OBSTACLE_CLOSE_ITERS)
     obstacle_mask = np.asarray(obstacle_mask, dtype=bool)
     obstacle = obstacle_mask.astype(np.float32)
 
@@ -155,20 +158,24 @@ def compute_terrain_layers(image: np.ndarray) -> LayerMap:
     # Bowl shape: difference of gaussians or Laplacian-of-Gaussian proxy
     # Simple proxy: locally depressed vs surroundings
     bowl_response = normalize01(
-        np.clip(gaussian_filter(base, sigma=config.CRATER_BOWL_SIGMA) - base, 0.0, None)
+        np.clip(gaussian_filter(
+            base, sigma=config.CRATER_BOWL_SIGMA) - base, 0.0, None)
     )
     crater = normalize01(0.55 * dark_region + 0.45 * bowl_response)
 
     # 4b. Hard mobility limits (strictly non-traversable)
     # `pit_depth` models local depressions relative to broader neighborhood.
     pit_depth = normalize01(
-        np.clip(gaussian_filter(base, sigma=config.CRATER_BOWL_SIGMA * 1.6) - base, 0.0, None)
+        np.clip(gaussian_filter(
+            base, sigma=config.CRATER_BOWL_SIGMA * 1.6) - base, 0.0, None)
     )
 
-    impassable_slope = np.asarray(slope_grade >= config.MAX_CLIMBABLE_SLOPE, dtype=bool)
+    impassable_slope = np.asarray(
+        slope_grade >= config.MAX_CLIMBABLE_SLOPE, dtype=bool)
     steep_block = np.asarray(slope >= config.HARD_SLOPE_THRESHOLD, dtype=bool)
     crater_block = np.asarray(
-        (pit_depth >= config.HARD_PIT_DEPTH_THRESHOLD) & (crater >= config.HARD_CRATER_SIGNAL_THRESHOLD),
+        (pit_depth >= config.HARD_PIT_DEPTH_THRESHOLD) & (
+            crater >= config.HARD_CRATER_SIGNAL_THRESHOLD),
         dtype=bool,
     )
     hard_block = obstacle_mask | impassable_slope | steep_block | crater_block
@@ -178,7 +185,8 @@ def compute_terrain_layers(image: np.ndarray) -> LayerMap:
     # Low local contrast = lower texture information = higher uncertainty?
     # Let's say: High contrast + Clear separation from threshold = High Confidence
     threshold_sep = normalize01(np.abs(obstacle_signal - threshold))
-    local_contrast = normalize01(np.abs(base - gaussian_filter(base, sigma=config.CONFIDENCE_CONTEXT_SIGMA)))
+    local_contrast = normalize01(
+        np.abs(base - gaussian_filter(base, sigma=config.CONFIDENCE_CONTEXT_SIGMA)))
     confidence = normalize01(0.65 * threshold_sep + 0.35 * local_contrast)
     uncertainty = normalize01(1.0 - confidence)
 
@@ -217,12 +225,12 @@ def build_cost_map(layers: LayerMap, weights: dict[str, float]) -> np.ndarray:
     # Hard blockage logic: strict non-traversable cells (physics limits)
     huge_penalty = np.inf
     blocked = layers["hard_block"] >= 0.5
-    
+
     # Scale cost to avoid float precision issues with huge penalties in A*
     # 1.0 is min traversal cost per step
     cell_cost = 1.0 + 9.0 * cell_cost  # Map [0,1] -> [1, 10] range roughly
     cell_cost = np.where(blocked, huge_penalty, cell_cost)
-    
+
     return cell_cost.astype(np.float32)
 
 

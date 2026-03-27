@@ -18,7 +18,8 @@ __depends__ = [
 
 DEFAULT_SEED = 25032026
 SEED_ENV_VAR = "MOON_GEN_SEED"
-DEFAULT_GRID_SIZE = max(257, int(os.getenv("MOON_GEN_DEFAULT_GRID_SIZE", "513")))
+DEFAULT_GRID_SIZE = max(
+    257, int(os.getenv("MOON_GEN_DEFAULT_GRID_SIZE", "513")))
 DEFAULT_AREA_SIZE = float(os.getenv("MOON_GEN_AREA_SIZE", "2400.0"))
 DEFAULT_HEIGHT_RANGE_METERS = float(os.getenv("MOON_GEN_Z_RANGE", "180.0"))
 DEM_PATH_ENV_VAR = "MOON_GEN_DEM_PATH"
@@ -49,8 +50,10 @@ def _resolve_seed(seed: int | None) -> int:
 
 
 def _background_height(x_coords: np.ndarray, y_coords: np.ndarray) -> np.ndarray:
-    nominal = perlin_multiscale_grid(x_coords, y_coords, octaves=5, psd=surface_psd_nominal)
-    rough = perlin_multiscale_grid(x_coords + 41.0, y_coords - 17.0, octaves=4, psd=surface_psd_rough)
+    nominal = perlin_multiscale_grid(
+        x_coords, y_coords, octaves=5, psd=surface_psd_nominal)
+    rough = perlin_multiscale_grid(
+        x_coords + 41.0, y_coords - 17.0, octaves=4, psd=surface_psd_rough)
     return 0.70 * nominal + 0.30 * rough
 
 
@@ -145,7 +148,8 @@ def _add_hills_and_ridges(x_coords: np.ndarray, y_coords: np.ndarray, z_grid: np
         cy = float(np.random.uniform(np.min(y_coords), np.max(y_coords)))
         sigma = float(np.random.uniform(0.06, 0.14) * span)
         amp = float(np.random.uniform(0.02, 0.06))
-        result += amp * np.exp(-((xx_grid - cx) ** 2 + (yy_grid - cy) ** 2) / (2.0 * sigma * sigma))
+        result += amp * np.exp(-((xx_grid - cx) ** 2 +
+                               (yy_grid - cy) ** 2) / (2.0 * sigma * sigma))
 
     ridge = 0.012 * np.sin(0.005 * xx_grid + 0.0035 * yy_grid)
     ridge += 0.010 * np.cos(0.0042 * xx_grid - 0.0031 * yy_grid)
@@ -178,10 +182,12 @@ def _add_crater_field(x_coords: np.ndarray, y_coords: np.ndarray, z_grid: np.nda
                 float(np.random.uniform(np.min(x_coords), np.max(x_coords))),
                 float(np.random.uniform(np.min(y_coords), np.max(y_coords))),
             )
-            result = make_crater(x_coords, y_coords, result, 0.5 * diameter, center)
+            result = make_crater(x_coords, y_coords,
+                                 result, 0.5 * diameter, center)
 
         if epoch > 0:
-            result = waste_gaussian(result, terrain_span / len(x_coords), 0.15 * (epoch / epochs))
+            result = waste_gaussian(
+                result, terrain_span / len(x_coords), 0.15 * (epoch / epochs))
 
     return result
 
@@ -208,7 +214,8 @@ def surface(n: int | None = None, seed: int | None = None) -> SurfaceType:
     with _seeded_numpy(resolved_seed):
         dem_patch = _load_dem_patch(nx, ny)
         if dem_patch is None:
-            dem_relief = _robust_normalize(_background_height(x_coords, y_coords), low=1.0, high=99.0)
+            dem_relief = _robust_normalize(_background_height(
+                x_coords, y_coords), low=1.0, high=99.0)
         else:
             dem_relief = _build_dem_relief(dem_patch, nx)
 

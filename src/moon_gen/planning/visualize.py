@@ -62,7 +62,8 @@ def render_outputs(
     for ax, (title, arr, cmap) in zip(axes.ravel(), views):
         im = ax.imshow(arr, cmap=cmap)
         ax.set_title(title)
-        ax.scatter([start[1], goal[1]], [start[0], goal[0]], c=["lime", "red"], s=20)
+        ax.scatter([start[1], goal[1]], [start[0], goal[0]],
+                   c=["lime", "red"], s=20)
         ax.set_xticks([])
         ax.set_yticks([])
         fig1.colorbar(im, ax=ax, fraction=0.046, pad=0.03)
@@ -74,7 +75,8 @@ def render_outputs(
         outputs["overview"] = str(overview_path)
 
     # 2. SELECTION FIGURE
-    fig2, axes2 = plt.subplots(2, 2, figsize=(14, 11), dpi=config.VISUALIZE_DPI)
+    fig2, axes2 = plt.subplots(2, 2, figsize=(
+        14, 11), dpi=config.VISUALIZE_DPI)
     # top-left safe, top-right eco, bottom-left fast, bottom-right selected
     panels = [
         ("safe", axes2[0, 0]),
@@ -87,7 +89,8 @@ def render_outputs(
         path = plans[mode]["result"].smoothed_path
         color = config.MODE_COLORS.get(mode, "white")
         _plot_path(ax, path, color, f"{mode.upper()} path")
-        ax.scatter([start[1], goal[1]], [start[0], goal[0]], c=["lime", "red"], s=35)
+        ax.scatter([start[1], goal[1]], [start[0], goal[0]],
+                   c=["lime", "red"], s=35)
         ax.set_title(f"{mode.upper()} mode")
         ax.legend(loc="upper right")
         ax.set_xticks([])
@@ -96,11 +99,13 @@ def render_outputs(
     # Final selection panel
     final_ax = axes2[1, 1]
     final_ax.imshow(image, cmap="gray")
-    final_ax.scatter([start[1], goal[1]], [start[0], goal[0]], c=["lime", "red"], s=40)
+    final_ax.scatter([start[1], goal[1]], [start[0], goal[0]],
+                     c=["lime", "red"], s=40)
     if selected_mode is not None:
         selected_path = plans[selected_mode]["result"].smoothed_path
         color = config.MODE_COLORS.get(selected_mode, "white")
-        _plot_path(final_ax, selected_path, color, f"Selected: {selected_mode.upper()}")
+        _plot_path(final_ax, selected_path, color,
+                   f"Selected: {selected_mode.upper()}")
         final_ax.legend(loc="upper right")
         final_ax.set_title("Autonomous final selection")
     else:

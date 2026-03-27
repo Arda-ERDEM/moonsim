@@ -83,7 +83,8 @@ def generate_all_candidates(
     elevation_map = np.asarray(image_input, dtype=np.float32)
     finite = np.isfinite(elevation_map)
     if not finite.all():
-        fill = float(np.nanmedian(elevation_map[finite])) if finite.any() else 0.0
+        fill = float(np.nanmedian(
+            elevation_map[finite])) if finite.any() else 0.0
         elevation_map = np.where(finite, elevation_map, fill)
 
     image = normalize01(elevation_map)
@@ -122,7 +123,8 @@ def generate_all_candidates(
         summary = summarize_candidate(mode, result, layers)
         plans[mode] = {"result": result, "summary": summary}
 
-    global_risk = float(np.mean(0.35 * layers["slope"] + 0.20 * layers["roughness"] + 0.25 * layers["obstacle"] + 0.20 * layers["crater"]))
+    global_risk = float(np.mean(
+        0.35 * layers["slope"] + 0.20 * layers["roughness"] + 0.25 * layers["obstacle"] + 0.20 * layers["crater"]))
     mean_uncertainty = float(np.mean(layers["uncertainty"]))
 
     mission = MissionConditions(
@@ -152,7 +154,8 @@ def plan_mission(
     elevation_map = np.asarray(image_input, dtype=np.float32)
     finite = np.isfinite(elevation_map)
     if not finite.all():
-        fill = float(np.nanmedian(elevation_map[finite])) if finite.any() else 0.0
+        fill = float(np.nanmedian(
+            elevation_map[finite])) if finite.any() else 0.0
         elevation_map = np.where(finite, elevation_map, fill)
 
     image = normalize01(elevation_map)
@@ -191,7 +194,8 @@ def plan_mission(
         summary = summarize_candidate(mode, result, layers)
         plans[mode] = {"result": result, "summary": summary}
 
-    global_risk = float(np.mean(0.35 * layers["slope"] + 0.20 * layers["roughness"] + 0.25 * layers["obstacle"] + 0.20 * layers["crater"]))
+    global_risk = float(np.mean(
+        0.35 * layers["slope"] + 0.20 * layers["roughness"] + 0.25 * layers["obstacle"] + 0.20 * layers["crater"]))
     mean_uncertainty = float(np.mean(layers["uncertainty"]))
 
     mission = MissionConditions(
@@ -201,8 +205,10 @@ def plan_mission(
         mean_uncertainty=mean_uncertainty,
     )
 
-    candidate_summaries: dict[str, CandidateSummary] = {mode: plans[mode]["summary"] for mode in plans}
-    selected_mode, explanation = select_autonomous_mode(candidate_summaries, mission)
+    candidate_summaries: dict[str, CandidateSummary] = {
+        mode: plans[mode]["summary"] for mode in plans}
+    selected_mode, explanation = select_autonomous_mode(
+        candidate_summaries, mission)
 
     return {
         "shape": tuple(int(v) for v in image.shape),
@@ -229,10 +235,10 @@ def run(image_path: str | None = None) -> dict[str, Any]:
 
     # 1. Load Image
     image, resolved_path = load_lunar_image(image_path)
-    
+
     # 2. Compute Features
     layers = compute_terrain_layers(image)
-    
+
     # 3. Build Cost Maps
     cost_maps = build_all_cost_maps(layers)
 
@@ -274,7 +280,8 @@ def run(image_path: str | None = None) -> dict[str, Any]:
 
     # 6. Autonomous Decision
     # Synthesize mission conditions from computed metrics + configured settings
-    global_risk = float(np.mean(0.35 * layers["slope"] + 0.20 * layers["roughness"] + 0.25 * layers["obstacle"] + 0.20 * layers["crater"]))
+    global_risk = float(np.mean(
+        0.35 * layers["slope"] + 0.20 * layers["roughness"] + 0.25 * layers["obstacle"] + 0.20 * layers["crater"]))
     mean_uncertainty = float(np.mean(layers["uncertainty"]))
 
     mission = MissionConditions(
@@ -284,8 +291,10 @@ def run(image_path: str | None = None) -> dict[str, Any]:
         mean_uncertainty=mean_uncertainty,
     )
 
-    candidate_summaries: dict[str, CandidateSummary] = {mode: plans[mode]["summary"] for mode in plans}
-    selected_mode, explanation = select_autonomous_mode(candidate_summaries, mission)
+    candidate_summaries: dict[str, CandidateSummary] = {
+        mode: plans[mode]["summary"] for mode in plans}
+    selected_mode, explanation = select_autonomous_mode(
+        candidate_summaries, mission)
 
     # 7. Terminal Output
     print("=" * 70)
@@ -303,7 +312,8 @@ def run(image_path: str | None = None) -> dict[str, Any]:
         print(f"{mode.upper()} path length: {summary['path_length']:.2f}")
         print(f"{mode.upper()} path cost: {summary['path_cost']:.3f}")
         print(f"{mode.upper()} mean risk: {summary['mean_risk']:.3f}")
-        print(f"{mode.upper()} mean uncertainty: {summary['mean_uncertainty']:.3f}")
+        print(
+            f"{mode.upper()} mean uncertainty: {summary['mean_uncertainty']:.3f}")
         print("-")
 
     print("-" * 70)
@@ -316,7 +326,8 @@ def run(image_path: str | None = None) -> dict[str, Any]:
     for mode, reason in explanation["rejected_modes"].items():
         print(f"  - {mode}: {reason}")
 
-    print(f"Confidence penalty affected decision: {_format_bool(explanation['confidence_penalty_affected'])}")
+    print(
+        f"Confidence penalty affected decision: {_format_bool(explanation['confidence_penalty_affected'])}")
     print(f"Fallback used: {_format_bool(explanation['fallback_used'])}")
 
     # 8. Visualization
@@ -348,8 +359,10 @@ def run(image_path: str | None = None) -> dict[str, Any]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Multi-mode lunar rover path planning")
-    parser.add_argument("--image", type=str, default=None, help="Optional path to lunar input image")
+    parser = argparse.ArgumentParser(
+        description="Multi-mode lunar rover path planning")
+    parser.add_argument("--image", type=str, default=None,
+                        help="Optional path to lunar input image")
     return parser.parse_args()
 
 

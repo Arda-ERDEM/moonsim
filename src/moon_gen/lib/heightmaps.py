@@ -45,7 +45,8 @@ def downsample_heightmap(
     trimmed = image[:new_height * scale_factor, :new_width * scale_factor]
 
     if image.ndim == 2:
-        reshaped = trimmed.reshape(new_height, scale_factor, new_width, scale_factor)
+        reshaped = trimmed.reshape(
+            new_height, scale_factor, new_width, scale_factor)
         downsampled = reshaped.mean(axis=(1, 3))
     else:
         trailing_shape = image.shape[2:]

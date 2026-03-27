@@ -1,13 +1,11 @@
+from moon_gen.surface_plotter import SurfacePlotter
+import pyqtgraph as pg
 import os
 import sys
 import argparse
 from pathlib import Path
 
 os.environ.setdefault('QT_IMAGEIO_MAXALLOC', '4096')
-
-import pyqtgraph as pg
-
-from moon_gen.surface_plotter import SurfacePlotter
 
 
 parser = argparse.ArgumentParser()

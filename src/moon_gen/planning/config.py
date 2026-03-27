@@ -15,7 +15,7 @@ IMAGE_CANDIDATES = [
 BATTERY_LEVEL = 85.0       # Percent (0-100)
 TIME_PRIORITY = 0.4        # Priority (0-1) - High means rush
 RISK_THRESHOLD = 0.65      # Global risk threshold for autonomous fallback
-CONFIDENCE_THRESHOLD = 0.6 # If mean confidence is below this, prefer Safe mode
+CONFIDENCE_THRESHOLD = 0.6  # If mean confidence is below this, prefer Safe mode
 LOW_BATTERY_THRESHOLD = 30.0
 TIME_PRIORITY_THRESHOLD = 0.7
 
@@ -35,7 +35,7 @@ HARD_PIT_DEPTH_THRESHOLD = 0.72
 HARD_CRATER_SIGNAL_THRESHOLD = 0.58
 
 CRATER_BOWL_SIGMA = 5.0    # Gaussian differential for bowl detection
-CRATER_DARK_PERCENTILE = 15 # Dark region threshold
+CRATER_DARK_PERCENTILE = 15  # Dark region threshold
 CONFIDENCE_CONTEXT_SIGMA = 2.0
 
 # -----------------------------------------------------------------------------
@@ -60,7 +60,8 @@ SAFE_WEIGHTS = {
 # Prioritizes: Flat terrain, smoothness, few turns (energy efficiency).
 ECO_WEIGHTS = {
     "slope": 4.0,
-    "roughness": 8.0,        # Very high roughness penalty (vibration/slip energy)
+    # Very high roughness penalty (vibration/slip energy)
+    "roughness": 8.0,
     "obstacle": 6.0,
     "crater": 3.0,
     "uncertainty": 1.0,
@@ -86,7 +87,8 @@ FAST_WEIGHTS = {
 # -----------------------------------------------------------------------------
 VISUALIZE = True
 VISUALIZE_SAVE = True
-VISUALIZE_SHOW = False # Set True to pop up window (blocks execution until closed)
+# Set True to pop up window (blocks execution until closed)
+VISUALIZE_SHOW = False
 VISUALIZE_DPI = 120
 VISUALIZE_OUTPUT_DIR = "img"
 OVERVIEW_FIGURE_NAME = "planning_overview.png"
@@ -96,7 +98,7 @@ SELECTION_FIGURE_NAME = "planning_selected_route.png"
 # PATH SMOOTHING
 # -----------------------------------------------------------------------------
 SMOOTHING_ENABLED = True
-LINE_OF_SIGHT_CHECK_STEP = 1 # Check every Nth node for LOS
+LINE_OF_SIGHT_CHECK_STEP = 1  # Check every Nth node for LOS
 start_fraction = (0.1, 0.1)  # Relative position
 goal_fraction = (0.9, 0.8)   # Relative position
 
