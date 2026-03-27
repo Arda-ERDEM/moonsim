@@ -26,46 +26,79 @@ def _format_bool(flag: bool) -> str:
     return "yes" if flag else "no"
 
 
+def _plan_mode_with_fallback(
+    *,
+    mode: str,
+    cost_map: np.ndarray,
+    blocked: np.ndarray,
+    start: tuple[int, int],
+    goal: tuple[int, int],
+    turn_penalty: float,
+    distance_weight: float,
+    elevation_map: np.ndarray,
+    cell_size: float,
+) -> PathResult:
+    """Plan one mode, relaxing obstacle inflation if no path is found."""
+    if mode == "safe":
+        inflation_candidates = (2.5, 2.0, 1.5, 1.0, 0.5, 0.0)
+        elevation_weight = 0.3
+    elif mode == "eco":
+        inflation_candidates = (0.5,)
+        elevation_weight = 5.0
+    else:  # fast
+        inflation_candidates = (0.0,)
+        elevation_weight = 0.1
+
+    last_result: PathResult | None = None
+    for inflation in inflation_candidates:
+        result = astar_plan(
+            cost_map=cost_map,
+            blocked=blocked,
+            start=start,
+            goal=goal,
+            turn_penalty=turn_penalty,
+            distance_weight=distance_weight,
+            elevation_map=elevation_map,
+            elevation_weight=elevation_weight,
+            obstacle_inflation=inflation,
+            cell_size=cell_size,
+        )
+        last_result = result
+        if result.exists:
+            return result
+
+    # Fallback return keeps previous behavior if all attempts fail.
+    assert last_result is not None
+    return last_result
+
+
 def generate_all_candidates(
     image_input: np.ndarray,
     start: tuple[int, int],
     goal: tuple[int, int],
     block_threshold: float | None = None,
+    cell_size: float = 1.0,
 ) -> dict[str, Any]:
-    """
-    Generate ALL THREE candidate routes (Safe, Eco, Fast) without selecting.
-    
-    Returns:
-        Dictionary with:
-        - plans: dict[str, dict] with safe/eco/fast route data
-        - layers: terrain layers
-        - mission: MissionConditions
-        - global_risk: float
-        - mean_uncertainty: float
-    """
-    # 1. Normalize/Preprocess
-    image = normalize01(image_input)
-    
-    # 2. Compute Features
+    """Generate all three candidate routes without selecting one."""
+    elevation_map = np.asarray(image_input, dtype=np.float32)
+    finite = np.isfinite(elevation_map)
+    if not finite.all():
+        fill = float(np.nanmedian(elevation_map[finite])) if finite.any() else 0.0
+        elevation_map = np.where(finite, elevation_map, fill)
+
+    image = normalize01(elevation_map)
     layers = compute_terrain_layers(image)
-    
-    # 3. Build Cost Maps
     cost_maps = build_all_cost_maps(layers)
 
-    # Ensure blocking threshold is respected
-    effective_threshold = block_threshold if block_threshold is not None else config.OBSTACLE_BLOCK_THRESHOLD
-    blocked = layers["obstacle"] >= effective_threshold
-    
-    # Ensure start/goal are safe
+    blocked = layers["hard_block"] >= 0.5
+    if block_threshold is not None:
+        blocked = blocked | (layers["obstacle"] >= block_threshold)
+
     if 0 <= start[0] < blocked.shape[0] and 0 <= start[1] < blocked.shape[1]:
         blocked[start] = False
     if 0 <= goal[0] < blocked.shape[0] and 0 <= goal[1] < blocked.shape[1]:
         blocked[goal] = False
 
-    # Use image as elevation map for Theta* 3D awareness
-    elevation_map = image
-
-    # 4. Run Theta* for each mode with specific optimizations
     mode_weights = {
         "safe": config.SAFE_WEIGHTS,
         "eco": config.ECO_WEIGHTS,
@@ -75,22 +108,8 @@ def generate_all_candidates(
     plans: dict[str, dict[str, Any]] = {}
     for mode in ("safe", "eco", "fast"):
         weights = mode_weights[mode]
-        
-        # Mode-specific Theta* parameters
-        if mode == "safe":
-            # Safety mode: Large obstacle inflation, favor wider paths
-            obstacle_inflation = 2.5  # Inflate obstacles significantly
-            elevation_weight = 0.3  # Slight elevation penalty
-        elif mode == "eco":
-            # Eco mode: Minimal inflation, HEAVY elevation penalty to find flattest terrain
-            obstacle_inflation = 0.5  # Minimal safety margin
-            elevation_weight = 5.0  # HEAVY penalty for vertical change (energy cost)
-        else:  # fast
-            # Fast mode: No inflation, minimal elevation penalty, maximize LOS shortcuts
-            obstacle_inflation = 0.0  # No inflation, graze obstacles
-            elevation_weight = 0.1  # Very slight elevation awareness
-        
-        result = astar_plan(
+        result = _plan_mode_with_fallback(
+            mode=mode,
             cost_map=cost_maps[mode],
             blocked=blocked,
             start=start,
@@ -98,16 +117,11 @@ def generate_all_candidates(
             turn_penalty=weights["turn_penalty"],
             distance_weight=weights["distance_weight"],
             elevation_map=elevation_map,
-            elevation_weight=elevation_weight,
-            obstacle_inflation=obstacle_inflation,
+            cell_size=cell_size,
         )
         summary = summarize_candidate(mode, result, layers)
-        plans[mode] = {
-            "result": result,
-            "summary": summary,
-        }
+        plans[mode] = {"result": result, "summary": summary}
 
-    # Compute mission conditions
     global_risk = float(np.mean(0.35 * layers["slope"] + 0.20 * layers["roughness"] + 0.25 * layers["obstacle"] + 0.20 * layers["crater"]))
     mean_uncertainty = float(np.mean(layers["uncertainty"]))
 
@@ -132,67 +146,39 @@ def plan_mission(
     start: tuple[int, int],
     goal: tuple[int, int],
     block_threshold: float | None = None,
+    cell_size: float = 1.0,
 ) -> dict[str, Any]:
-    """
-    Programmatic entry point for the planner.
-    
-    Args:
-        image_input: 2D numpy array (heightmap or terrain image).
-        start: (row, col) coordinates.
-        goal: (row, col) coordinates.
-        block_threshold: Optional override for obstacle blocking.
-        
-    Returns:
-        Dictionary containing plans, selected mode, and explanation.
-    """
-    # 1. Normalize/Preprocess
-    image = normalize01(image_input)
-    
-    # 2. Compute Features
+    """Programmatic planner entry point."""
+    elevation_map = np.asarray(image_input, dtype=np.float32)
+    finite = np.isfinite(elevation_map)
+    if not finite.all():
+        fill = float(np.nanmedian(elevation_map[finite])) if finite.any() else 0.0
+        elevation_map = np.where(finite, elevation_map, fill)
+
+    image = normalize01(elevation_map)
     layers = compute_terrain_layers(image)
-    
-    # 3. Build Cost Maps
     cost_maps = build_all_cost_maps(layers)
-    
-    # Ensure blocking threshold is respected if provided, else use config
-    effective_threshold = block_threshold if block_threshold is not None else config.OBSTACLE_BLOCK_THRESHOLD
-    blocked = layers["obstacle"] >= effective_threshold
-    
-    # Ensure start/goal are safe
+
+    blocked = layers["hard_block"] >= 0.5
+    if block_threshold is not None:
+        blocked = blocked | (layers["obstacle"] >= block_threshold)
+
     if 0 <= start[0] < blocked.shape[0] and 0 <= start[1] < blocked.shape[1]:
         blocked[start] = False
     if 0 <= goal[0] < blocked.shape[0] and 0 <= goal[1] < blocked.shape[1]:
         blocked[goal] = False
 
-    # Use image as elevation map for Theta* 3D awareness
-    elevation_map = image
-
-    # 4. Run Theta* for each mode with specific optimizations
     mode_weights = {
         "safe": config.SAFE_WEIGHTS,
         "eco": config.ECO_WEIGHTS,
         "fast": config.FAST_WEIGHTS,
     }
 
-    plans: dict[str, dict] = {}
+    plans: dict[str, dict[str, Any]] = {}
     for mode in ("safe", "eco", "fast"):
         weights = mode_weights[mode]
-        
-        # Mode-specific Theta* parameters
-        if mode == "safe":
-            # Safety mode: Large obstacle inflation, favor wider paths
-            obstacle_inflation = 2.5  # Inflate obstacles significantly
-            elevation_weight = 0.3  # Slight elevation penalty
-        elif mode == "eco":
-            # Eco mode: Minimal inflation, HEAVY elevation penalty to find flattest terrain
-            obstacle_inflation = 0.5  # Minimal safety margin
-            elevation_weight = 5.0  # HEAVY penalty for vertical change (energy cost)
-        else:  # fast
-            # Fast mode: No inflation, minimal elevation penalty, maximize LOS shortcuts
-            obstacle_inflation = 0.0  # No inflation, graze obstacles
-            elevation_weight = 0.1  # Very slight elevation awareness
-        
-        result = astar_plan(
+        result = _plan_mode_with_fallback(
+            mode=mode,
             cost_map=cost_maps[mode],
             blocked=blocked,
             start=start,
@@ -200,16 +186,11 @@ def plan_mission(
             turn_penalty=weights["turn_penalty"],
             distance_weight=weights["distance_weight"],
             elevation_map=elevation_map,
-            elevation_weight=elevation_weight,
-            obstacle_inflation=obstacle_inflation,
+            cell_size=cell_size,
         )
         summary = summarize_candidate(mode, result, layers)
-        plans[mode] = {
-            "result": result,
-            "summary": summary,
-        }
+        plans[mode] = {"result": result, "summary": summary}
 
-    # 5. Autonomous Decision
     global_risk = float(np.mean(0.35 * layers["slope"] + 0.20 * layers["roughness"] + 0.25 * layers["obstacle"] + 0.20 * layers["crater"]))
     mean_uncertainty = float(np.mean(layers["uncertainty"]))
 
@@ -222,7 +203,7 @@ def plan_mission(
 
     candidate_summaries: dict[str, CandidateSummary] = {mode: plans[mode]["summary"] for mode in plans}
     selected_mode, explanation = select_autonomous_mode(candidate_summaries, mission)
-    
+
     return {
         "shape": tuple(int(v) for v in image.shape),
         "start": start,
@@ -230,22 +211,22 @@ def plan_mission(
         "plans": plans,
         "selected_mode": selected_mode,
         "explanation": explanation,
-        "layers": layers, # Return layers for visualization if checks needed
+        "layers": layers,
     }
 
 
 def run(image_path: str | None = None) -> dict[str, Any]:
     """
     Main planning pipeline entry point.
-    
+
     Future Extensibility Hooks:
-    1.  Replace gradient-based slope with NASA DEM slope in `maps.compute_terrain_layers`.
-    2.  Swap crater proxy with learned crater detector while preserving `layers['crater']` API.
-    3.  Replace static A* in `planner.astar_plan` with D* Lite for dynamic replanning.
-    4.  Use uncertainty map for online risk-aware replanning by updating cost maps in-loop.
-    5.  Bridge `run()` I/O to ROS topics/services or simulator APIs without changing core logic.
+    1. Replace gradient-based slope with NASA DEM slope in `maps.compute_terrain_layers`.
+    2. Swap crater proxy with learned crater detector while preserving `layers['crater']` API.
+    3. Replace static A* in `planner.astar_plan` with D* Lite for dynamic replanning.
+    4. Use uncertainty map for online risk-aware replanning by updating cost maps in-loop.
+    5. Bridge `run()` I/O to ROS topics/services or simulator APIs without changing core logic.
     """
-    
+
     # 1. Load Image
     image, resolved_path = load_lunar_image(image_path)
     
@@ -263,7 +244,7 @@ def run(image_path: str | None = None) -> dict[str, Any]:
     )
 
     # Ensure start/goal are not on obstacles (simple fix)
-    blocked = layers["obstacle"] >= config.OBSTACLE_BLOCK_THRESHOLD
+    blocked = layers["hard_block"] >= 0.5
     blocked[start] = False
     blocked[goal] = False
 

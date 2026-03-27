@@ -20,6 +20,7 @@ from typing import Any
 import numpy as np
 from scipy.interpolate import CubicSpline
 
+from moon_gen.planning import config
 from moon_gen.planning.types import PathResult
 
 
@@ -76,6 +77,10 @@ def _line_of_sight(
     start: tuple[int, int],
     end: tuple[int, int],
     blocked: np.ndarray,
+    elevation_map: np.ndarray | None = None,
+    max_climbable_slope: float = config.MAX_CLIMBABLE_SLOPE,
+    impassable_slope_mask: np.ndarray | None = None,
+    cell_size: float = 1.0,
     obstacle_margin: float = 0.0,
 ) -> bool:
     """
@@ -91,14 +96,31 @@ def _line_of_sight(
         True if line of sight is clear, False otherwise
     """
     points = _bresenham_line(start, end)
+    blocked_mask = np.asarray(blocked, dtype=bool)
+    slope_mask = None if impassable_slope_mask is None else np.asarray(impassable_slope_mask, dtype=bool)
     
-    h, w = blocked.shape
+    h, w = blocked_mask.shape
     
     for r, c in points:
         if r < 0 or r >= h or c < 0 or c >= w:
             return False
-        if blocked[r, c]:
+        # Any obstacle hit on the mathematical segment invalidates LoS.
+        if blocked_mask[r, c]:
             return False
+        if slope_mask is not None and slope_mask[r, c]:
+            return False
+
+    # Absolute physical check along the LoS segment:
+    # if any consecutive rise/run exceeds climbability, LoS is invalid.
+    if elevation_map is not None and len(points) > 1:
+        for (r0, c0), (r1, c1) in zip(points[:-1], points[1:]):
+            dz = float(elevation_map[r1, c1] - elevation_map[r0, c0])
+            dxy = float(np.hypot(r1 - r0, c1 - c0)) * max(cell_size, 1e-6)
+            if dxy <= 0.0:
+                continue
+            segment_slope = abs(dz) / dxy
+            if segment_slope > max_climbable_slope:
+                return False
     
     return True
 
@@ -133,6 +155,7 @@ def theta_star_plan(
     distance_weight: float = 1.0,
     elevation_weight: float = 0.0,
     obstacle_inflation: float = 0.0,
+    cell_size: float = 1.0,
 ) -> PathResult:
     """
     Theta* pathfinding with any-angle movement and line-of-sight optimization.
@@ -172,6 +195,15 @@ def theta_star_plan(
     # Use elevation map if provided, else use cost_map as proxy
     if elevation_map is None:
         elevation_map = cost_map
+
+    # Cells whose local grade exceeds rover climbability are absolutely non-traversable.
+    elev_gy, elev_gx = np.gradient(np.asarray(elevation_map, dtype=np.float32))
+    local_grade = np.hypot(elev_gx, elev_gy)
+    impassable_slope_mask = local_grade > config.MAX_CLIMBABLE_SLOPE
+
+    inflated_blocked = np.asarray(inflated_blocked, dtype=bool) | np.asarray(impassable_slope_mask, dtype=bool)
+    inflated_blocked[start] = False
+    inflated_blocked[goal] = False
     
     # Priority queue: (f_cost, counter, row, col)
     frontier: list[tuple[float, int, int, int]] = []
@@ -215,6 +247,15 @@ def theta_star_plan(
                 continue
             if inflated_blocked[nr, nc]:
                 continue
+
+            # Absolute hard reject: rover cannot traverse neighbor transition beyond max climbable slope.
+            dz_neighbor = float(elevation_map[nr, nc] - elevation_map[curr_r, curr_c])
+            dxy_neighbor = float(np.hypot(dr, dc)) * max(cell_size, 1e-6)
+            if dxy_neighbor <= 0.0:
+                continue
+            edge_slope = abs(dz_neighbor) / dxy_neighbor
+            if edge_slope > config.MAX_CLIMBABLE_SLOPE:
+                continue
             
             # Geometric cost
             step_dist = float(np.hypot(dr, dc))
@@ -232,7 +273,15 @@ def theta_star_plan(
             if parent_node is not None:
                 # Theta* logic: try to shortcut via parent's parent
                 grandparent = parent_node
-                if _line_of_sight(grandparent, neighbor, inflated_blocked):
+                if _line_of_sight(
+                    grandparent,
+                    neighbor,
+                    inflated_blocked,
+                    elevation_map=elevation_map,
+                    max_climbable_slope=config.MAX_CLIMBABLE_SLOPE,
+                    impassable_slope_mask=impassable_slope_mask,
+                    cell_size=cell_size,
+                ):
                     # Direct path from grandparent to neighbor
                     shortcut_dist = float(np.hypot(
                         neighbor[0] - grandparent[0],

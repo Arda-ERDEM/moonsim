@@ -131,7 +131,8 @@ def compute_terrain_layers(image: np.ndarray) -> LayerMap:
 
     # 1. Slope (approximate via gradient)
     gy, gx = np.gradient(base)
-    slope = normalize01(np.hypot(gx, gy))
+    slope_grade = np.hypot(gx, gy).astype(np.float32)
+    slope = normalize01(slope_grade)
 
     # 2. Roughness (local variance = E[X^2] - E[X]^2)
     mean = gaussian_filter(base, sigma=config.ROUGHNESS_SIGMA)
@@ -144,6 +145,7 @@ def compute_terrain_layers(image: np.ndarray) -> LayerMap:
     obstacle_mask = obstacle_signal >= threshold
     obstacle_mask = binary_dilation(obstacle_mask, iterations=config.OBSTACLE_DILATION_ITERS)
     obstacle_mask = binary_closing(obstacle_mask, iterations=config.OBSTACLE_CLOSE_ITERS)
+    obstacle_mask = np.asarray(obstacle_mask, dtype=bool)
     obstacle = obstacle_mask.astype(np.float32)
 
     # 4. Crater Risk (dark regions + bowl shape)
@@ -157,6 +159,20 @@ def compute_terrain_layers(image: np.ndarray) -> LayerMap:
     )
     crater = normalize01(0.55 * dark_region + 0.45 * bowl_response)
 
+    # 4b. Hard mobility limits (strictly non-traversable)
+    # `pit_depth` models local depressions relative to broader neighborhood.
+    pit_depth = normalize01(
+        np.clip(gaussian_filter(base, sigma=config.CRATER_BOWL_SIGMA * 1.6) - base, 0.0, None)
+    )
+
+    impassable_slope = np.asarray(slope_grade >= config.MAX_CLIMBABLE_SLOPE, dtype=bool)
+    steep_block = np.asarray(slope >= config.HARD_SLOPE_THRESHOLD, dtype=bool)
+    crater_block = np.asarray(
+        (pit_depth >= config.HARD_PIT_DEPTH_THRESHOLD) & (crater >= config.HARD_CRATER_SIGNAL_THRESHOLD),
+        dtype=bool,
+    )
+    hard_block = obstacle_mask | impassable_slope | steep_block | crater_block
+
     # 5. Confidence / Uncertainty
     # Ambiguous regions near obstacle threshold = lower confidence
     # Low local contrast = lower texture information = higher uncertainty?
@@ -169,9 +185,15 @@ def compute_terrain_layers(image: np.ndarray) -> LayerMap:
     return {
         "image": base,
         "slope": slope,
+        "slope_grade": slope_grade,
+        "pit_depth": pit_depth,
         "roughness": roughness,
         "obstacle": obstacle,
         "crater": crater,
+        "impassable_slope": impassable_slope.astype(np.float32),
+        "steep_block": steep_block.astype(np.float32),
+        "crater_block": crater_block.astype(np.float32),
+        "hard_block": hard_block.astype(np.float32),
         "confidence": confidence,
         "uncertainty": uncertainty,
         "obstacle_signal": normalize01(obstacle_signal),
@@ -192,9 +214,9 @@ def build_cost_map(layers: LayerMap, weights: dict[str, float]) -> np.ndarray:
     # Normalize base cost map to [0, 1] before blockage logic
     cell_cost = normalize01(cell_cost)
 
-    # Hard blockage logic: if obstacle > threshold, set cost extremely high
-    huge_penalty = 1e6
-    blocked = layers["obstacle"] >= config.OBSTACLE_BLOCK_THRESHOLD
+    # Hard blockage logic: strict non-traversable cells (physics limits)
+    huge_penalty = np.inf
+    blocked = layers["hard_block"] >= 0.5
     
     # Scale cost to avoid float precision issues with huge penalties in A*
     # 1.0 is min traversal cost per step

@@ -82,6 +82,9 @@ class SurfacePlotter(QtWidgets.QFrame):
         self._nextPickTarget = 'start'
         self._mapImageItem: pg.ImageItem | None = None
         self._mapWaypointScatter: pg.ScatterPlotItem | None = None
+        self._mapZoomLevel: float = 1.0  # Track zoom state
+        self._mapInitialBounds: tuple[float, float, float, float] | None = None  # (x_min, x_max, y_min, y_max)
+        self._mapZoomLabel: QtWidgets.QLabel | None = None
 
         # NEW: Multi-route selection system
         self._candidate_routes: dict[str, dict] = {}  # {safe/eco/fast: {path, cost, etc}}
@@ -169,13 +172,15 @@ class SurfacePlotter(QtWidgets.QFrame):
         planner_layout = QtWidgets.QVBoxLayout(planner_tab)
 
         self._mapPlot = pg.PlotWidget(planner_tab)
-        self._mapPlot.setMinimumHeight(260)
+        self._mapPlot.setMinimumHeight(340)
         self._mapPlot.setAspectLocked(True)
+        self._mapPlot.getViewBox().setDefaultPadding(0.0)
         self._mapPlot.showGrid(x=True, y=True, alpha=0.2)
         self._mapPlot.setLabel('bottom', 'X', units='m')
         self._mapPlot.setLabel('left', 'Y', units='m')
         self._mapPlot.setMenuEnabled(False)
         self._mapPlot.scene().sigMouseClicked.connect(self._onPlannerMapClicked)
+        self._mapPlot.wheelEvent = self._mapPlotWheelEvent  # Override wheel for zoom
         planner_layout.addWidget(self._mapPlot)
 
         self._startCoordLabel = QtWidgets.QLabel('Start: not selected', planner_tab)
@@ -428,6 +433,10 @@ class SurfacePlotter(QtWidgets.QFrame):
         x_min, x_max = float(x.min()), float(x.max())
         y_min, y_max = float(y.min()), float(y.max())
 
+        # Store initial bounds for reset
+        self._mapInitialBounds = (x_min, x_max, y_min, y_max)
+        self._mapZoomLevel = 1.0
+
         if self._mapImageItem is None:
             self._mapImageItem = pg.ImageItem(axisOrder='row-major')
             self._mapPlot.addItem(self._mapImageItem)
@@ -436,8 +445,8 @@ class SurfacePlotter(QtWidgets.QFrame):
         self._mapImageItem.setImage(z_view, autoLevels=True)
         self._mapImageItem.setRect(QtCore.QRectF(x_min, y_min, np.ptp(x), np.ptp(y)))
 
-        self._mapPlot.setXRange(x_min, x_max, padding=0.02)
-        self._mapPlot.setYRange(y_min, y_max, padding=0.02)
+        self._mapPlot.setXRange(x_min, x_max, padding=0.0)
+        self._mapPlot.setYRange(y_min, y_max, padding=0.0)
 
         if self._startWaypoint is not None:
             self._startWaypoint = (
@@ -452,8 +461,123 @@ class SurfacePlotter(QtWidgets.QFrame):
 
         self._refreshWaypointLabels()
         self._refreshMapWaypointOverlay()
+        self._updateMapZoomLabel()
 
         self._missionHazardMap = None
+
+    def _mapPlotWheelEvent(self, ev):
+        """Handle mouse wheel zoom on map."""
+        vb = self._mapPlot.getViewBox()
+        if vb is None:
+            return
+
+        # Determine zoom direction
+        delta = ev.angleDelta().y()
+        zoom_factor = 0.85 if delta > 0 else 1.18
+        
+        # Apply scaling with limits
+        new_zoom = self._mapZoomLevel * zoom_factor
+        if 0.2 <= new_zoom <= 5.0:
+            self._mapZoomLevel = new_zoom
+            vb.scaleBy((1/zoom_factor, 1/zoom_factor), center=vb.mapSceneToView(ev.position()))
+            self._updateMapZoomLabel()
+
+    def _mapZoomIn(self):
+        """Zoom map in smoothly with limits."""
+        vb = self._mapPlot.getViewBox()
+        if vb is None:
+            return
+        
+        new_zoom = min(self._mapZoomLevel * 0.7, 5.0)
+        zoom_factor = self._mapZoomLevel / new_zoom if new_zoom != 0 else 1.0
+        self._mapZoomLevel = new_zoom
+        vb.scaleBy((zoom_factor, zoom_factor), center=vb.viewCenter())
+        self._updateMapZoomLabel()
+
+    def _mapZoomOut(self):
+        """Zoom map out smoothly with limits."""
+        vb = self._mapPlot.getViewBox()
+        if vb is None:
+            return
+        
+        new_zoom = max(self._mapZoomLevel * 1.43, 0.2)
+        zoom_factor = self._mapZoomLevel / new_zoom if new_zoom != 0 else 1.0
+        self._mapZoomLevel = new_zoom
+        vb.scaleBy((zoom_factor, zoom_factor), center=vb.viewCenter())
+        self._updateMapZoomLabel()
+
+    def _mapResetView(self):
+        """Reset map view to initial bounds with animation."""
+        if self._mapInitialBounds is None:
+            return
+        
+        x_min, x_max, y_min, y_max = self._mapInitialBounds
+        self._mapPlot.setXRange(x_min, x_max, padding=0.0)
+        self._mapPlot.setYRange(y_min, y_max, padding=0.0)
+        self._mapZoomLevel = 1.0
+        self._updateMapZoomLabel()
+
+    def _updateMapZoomLabel(self):
+        """Update zoom level display."""
+        if self._mapZoomLabel is None:
+            return
+
+        zoom_percent = int(100.0 / self._mapZoomLevel)
+        self._mapZoomLabel.setText(f'{zoom_percent}%')
+        self._mapZoomLabel.setStyleSheet(
+            'background-color: #f0f0f0; border-radius: 3px; padding: 2px;'
+        )
+
+    def _updateDisplayGrid(self):
+        x, y, z, *c = self._surfaceData
+        x_min = float(np.min(x))
+        x_max = float(np.max(x))
+        y_min = float(np.min(y))
+        y_max = float(np.max(y))
+        z_min = float(np.nanmin(z))
+        x_span = float(max(np.ptp(x), 1e-6))
+        y_span = float(max(np.ptp(y), 1e-6))
+
+        # Match visual grid resolution to the actual map samples.
+        x_cells = max(1, len(x) - 1)
+        y_cells = max(1, len(y) - 1)
+        x_spacing = x_span / x_cells
+        y_spacing = y_span / y_cells
+
+        self.grid.resetTransform()
+        self.grid.setSize(x=x_span, y=y_span, z=0.0)
+        self.grid.setSpacing(x=x_spacing, y=y_spacing, z=1.0)
+        # Anchor grid at terrain floor so surface rises from the grid with no base gap.
+        self.grid.translate(0.5 * (x_min + x_max), 0.5 * (y_min + y_max), z_min)
+
+    def _frameSurfaceCamera(self):
+        x, y, z, *c = self._surfaceData
+        x_mid = 0.5 * (float(np.min(x)) + float(np.max(x)))
+        y_mid = 0.5 * (float(np.min(y)) + float(np.max(y)))
+        z_min = float(np.nanmin(z))
+        z_max = float(np.nanmax(z))
+        z_span = float(max(z_max - z_min, 1e-6))
+        xy_diag = float(np.hypot(np.ptp(x), np.ptp(y)))
+        distance = 1.05 * max(xy_diag, 6.0 * z_span)
+        center = (x_mid, y_mid, z_min + 0.35 * z_span)
+
+        # Keep the initial camera clearly above terrain so surface faces upward.
+        try:
+            self.vw.setCameraPosition(
+                distance=distance,
+                elevation=58.0,
+                azimuth=35.0,
+                center=center,
+            )
+        except TypeError:
+            self.vw.setCameraPosition(
+                distance=distance,
+                elevation=58.0,
+                azimuth=35.0,
+            )
+            if hasattr(self.vw, 'opts') and isinstance(getattr(self.vw, 'opts'), dict):
+                self.vw.opts['center'] = pg.Vector(*center)
+                self.vw.update()
 
     def _clearMissionGraphics(self):
         self.stopRoverMission()
@@ -470,11 +594,16 @@ class SurfacePlotter(QtWidgets.QFrame):
             self.vw.removeItem(self._roverItem)
             self._roverItem = None
 
+        # Also reset map view when surface changes
+        self._mapResetView()
+
         self._plannedPath = None
         self._roverPathCursor = 0
 
     def _onSurfaceChanged(self):
         self._clearMissionGraphics()
+        self._updateDisplayGrid()
+        self._frameSurfaceCamera()
         self._updateWaypointRanges()
         self._setMissionStatus('Surface ready. Define two waypoints and plan mission.')
 
@@ -809,11 +938,16 @@ class SurfacePlotter(QtWidgets.QFrame):
             # IMPORT the new function from planning.main
             from moon_gen.planning.main import generate_all_candidates
             
+            grid_dx = float(np.ptp(x) / max(len(x) - 1, 1))
+            grid_dy = float(np.ptp(y) / max(len(y) - 1, 1))
+            cell_size = 0.5 * (grid_dx + grid_dy)
+
             # Generate ALL three routes WITHOUT selecting
             result = generate_all_candidates(
                 image_input=z,
                 start=start_idx,
-                goal=end_idx
+                goal=end_idx,
+                cell_size=cell_size,
             )
         except Exception as e:
             self._logger.error(f"Planning failed: {e}", exc_info=True)
@@ -919,31 +1053,35 @@ class SurfacePlotter(QtWidgets.QFrame):
             self._setMissionStatus(f'{mode.upper()} route is not available.')
             return
 
-        self._current_selected_mode = mode
-        route_data = self._candidate_routes[mode]
-        path_points = route_data['path_points']
-        summary = route_data['summary']
+        try:
+            self._current_selected_mode = mode
+            route_data = self._candidate_routes[mode]
+            path_points = route_data['path_points']
+            summary = route_data['summary']
 
-        # Update the active path (for rover movement)
-        self._plannedPath = path_points
-        self._roverPathCursor = 0
+            # Update the active path (for rover movement)
+            self._plannedPath = path_points
+            self._roverPathCursor = 0
 
-        # Set rover to start
-        if len(path_points) > 0:
-            self._setRoverPosition(path_points[0])
+            # Set rover to start
+            if len(path_points) > 0:
+                self._setRoverPosition(path_points[0])
 
-        # Highlight the selected route (make it thicker/brighter)
-        self._updateRouteHighlight(mode)
+            # Highlight the selected route (make it thicker/brighter)
+            self._updateRouteHighlight(mode)
 
-        # Update status
-        status_msg = (
-            f"SELECTED: {mode.upper()} | "
-            f"Length: {summary['path_length']:.1f} | "
-            f"Risk: {summary['mean_risk']:.3f} | "
-            f"Click 'Start Rover' to execute."
-        )
-        self._setMissionStatus(status_msg)
-        print(f"[SELECTION] User selected {mode.upper()} route")
+            # Update status
+            status_msg = (
+                f"SELECTED: {mode.upper()} | "
+                f"Length: {summary['path_length']:.1f} | "
+                f"Risk: {summary['mean_risk']:.3f} | "
+                f"Click 'Start Rover' to execute."
+            )
+            self._setMissionStatus(status_msg)
+            print(f"[SELECTION] User selected {mode.upper()} route")
+        except Exception as exc:
+            self._logger.error(f"Route selection failed for {mode}: {exc}", exc_info=True)
+            self._setMissionStatus(f"{mode.upper()} selection failed: {exc}")
 
     def _selectRouteAuto(self):
         """Automatically select the best route using the decision logic."""
@@ -951,53 +1089,61 @@ class SurfacePlotter(QtWidgets.QFrame):
             self._setMissionStatus('No mission data. Plan path first.')
             return
 
-        plans = self._mission_data.get('plans', {})
-        mission = self._mission_data.get('mission')
-        
-        # Get candidate summaries
-        candidate_summaries = {mode: plans[mode]['summary'] for mode in plans if plans[mode]['summary']['exists']}
-        
-        if not candidate_summaries:
-            self._setMissionStatus('No valid routes for AUTO selection.')
-            return
+        try:
+            plans = self._mission_data.get('plans', {})
+            mission = self._mission_data.get('mission')
 
-        # Use the decision logic
-        from moon_gen.planning.decision import select_autonomous_mode
-        
-        selected_mode, explanation = select_autonomous_mode(candidate_summaries, mission)
+            # Keep all summaries; decision logic handles non-existing paths internally.
+            candidate_summaries = {
+                mode: plans[mode]['summary']
+                for mode in ('safe', 'eco', 'fast')
+                if mode in plans
+            }
 
-        if not selected_mode or selected_mode not in self._candidate_routes:
-            self._setMissionStatus('AUTO failed to select a route.')
-            return
+            if not candidate_summaries:
+                self._setMissionStatus('No routes available for AUTO selection.')
+                return
 
-        # Highlight explanation
-        factors = explanation.get('main_decision_factors', [])
-        reason = factors[0] if factors else "Optimal selection."
+            # Use the decision logic
+            from moon_gen.planning.decision import select_autonomous_mode
 
-        self._current_selected_mode = selected_mode
-        route_data = self._candidate_routes[selected_mode]
-        path_points = route_data['path_points']
+            selected_mode, explanation = select_autonomous_mode(candidate_summaries, mission)
 
-        # Update active path
-        self._plannedPath = path_points
-        self._roverPathCursor = 0
+            if not selected_mode or selected_mode not in self._candidate_routes:
+                self._setMissionStatus('AUTO failed to select an executable route.')
+                return
 
-        # Set rover to start
-        if len(path_points) > 0:
-            self._setRoverPosition(path_points[0])
+            # Highlight explanation
+            factors = explanation.get('main_decision_factors', [])
+            reason = factors[0] if factors else "Optimal selection."
 
-        # Highlight selected route
-        self._updateRouteHighlight(selected_mode)
+            self._current_selected_mode = selected_mode
+            route_data = self._candidate_routes[selected_mode]
+            path_points = route_data['path_points']
 
-        # Status with explanation
-        status_msg = (
-            f"AUTO SELECTED: {selected_mode.upper()}\n"
-            f"Reason: {reason}\n"
-            f"Ready for execution."
-        )
-        self._setMissionStatus(status_msg)
-        print(f"[AUTO DECISION] Selected {selected_mode.upper()}")
-        print(f"  Reason: {reason}")
+            # Update active path
+            self._plannedPath = path_points
+            self._roverPathCursor = 0
+
+            # Set rover to start
+            if len(path_points) > 0:
+                self._setRoverPosition(path_points[0])
+
+            # Highlight selected route
+            self._updateRouteHighlight(selected_mode)
+
+            # Status with explanation
+            status_msg = (
+                f"AUTO SELECTED: {selected_mode.upper()}\n"
+                f"Reason: {reason}\n"
+                f"Ready for execution."
+            )
+            self._setMissionStatus(status_msg)
+            print(f"[AUTO DECISION] Selected {selected_mode.upper()}")
+            print(f"  Reason: {reason}")
+        except Exception as exc:
+            self._logger.error(f"AUTO selection failed: {exc}", exc_info=True)
+            self._setMissionStatus(f"AUTO selection failed: {exc}")
 
     def _updateRouteHighlight(self, selected_mode: str):
         """Update line widths/colors to highlight the selected route."""
@@ -1132,6 +1278,29 @@ class SurfacePlotter(QtWidgets.QFrame):
 
         return normalized.astype(np.float32)
 
+    def _sanitize_tiff_heightmap(self, values: np.ndarray) -> np.ndarray:
+        """Remove rare integer sentinel extremes that create corner spikes."""
+        arr = np.asarray(values)
+        cleaned = np.asarray(arr, dtype=np.float32)
+
+        if np.issubdtype(arr.dtype, np.integer):
+            info = np.iinfo(arr.dtype)
+            extreme_mask = (arr == info.min) | (arr == info.max)
+            # Treat tiny pockets of dtype extremes as invalid fill pixels.
+            if extreme_mask.any() and float(extreme_mask.mean()) < 0.01:
+                cleaned = cleaned.copy()
+                cleaned[extreme_mask] = np.nan
+
+        finite = np.isfinite(cleaned)
+        if not finite.any():
+            raise ValueError('TIFF does not contain valid finite values')
+
+        if not finite.all():
+            fill_value = float(np.nanmedian(cleaned[finite]))
+            cleaned = np.where(finite, cleaned, fill_value)
+
+        return cleaned
+
     def plotSurfaceFromFile(self, filename: str, *, prompt_user: bool = True):
 
         if filename.casefold().endswith('.py'):
@@ -1189,6 +1358,7 @@ class SurfacePlotter(QtWidgets.QFrame):
                     height_data = height_data[..., 0]
                 if height_data.ndim != 2:
                     raise ValueError('unsupported TIFF dimensions')
+                height_data = self._sanitize_tiff_heightmap(height_data)
                 height_data = self._downsample_heightmap(height_data)
                 normalized = self._normalize_heightmap(height_data)
                 h, w = normalized.shape
@@ -1219,9 +1389,10 @@ class SurfacePlotter(QtWidgets.QFrame):
                 normalized = zz / 255.0
                 h, w = normalized.shape
 
-            default_x_range = 100.0
-            default_y_range = default_x_range / w * h
-            default_z_range = 1.0
+            default_x_range = 1000.0
+            default_y_range = 1000.0
+            # Default exaggeration keeps TIFF relief visible at startup.
+            default_z_range = max(1.0, 0.12 * min(default_x_range, default_y_range))
 
             if prompt_user:
                 x_range, _ = QtWidgets.QInputDialog.getDouble(
@@ -1257,12 +1428,24 @@ class SurfacePlotter(QtWidgets.QFrame):
             self.surf.setData(x=x, y=y, z=z)
             # Frame the full terrain in the 3D view after loading the heightmap.
             map_diag = float(np.hypot(x_range, y_range))
-            self.vw.setCameraPosition(
-                distance=1.4 * map_diag,
-                elevation=45,
-                azimuth=-45,
-                center=(0.0, 0.0, float(np.mean(z))),
-            )
+            center = (0.0, 0.0, float(np.mean(z)))
+            try:
+                self.vw.setCameraPosition(
+                    distance=1.4 * map_diag,
+                    elevation=45,
+                    azimuth=-45,
+                    center=center,
+                )
+            except TypeError:
+                # Older pyqtgraph versions do not accept the `center` keyword.
+                self.vw.setCameraPosition(
+                    distance=1.4 * map_diag,
+                    elevation=45,
+                    azimuth=-45,
+                )
+                if hasattr(self.vw, 'opts') and isinstance(getattr(self.vw, 'opts'), dict):
+                    self.vw.opts['center'] = pg.Vector(*center)
+                    self.vw.update()
             self._module = None
 
             self.setToolTip(os.path.basename(filename))

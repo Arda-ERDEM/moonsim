@@ -26,6 +26,7 @@ def astar_plan(
     elevation_map: np.ndarray | None = None,
     elevation_weight: float = 0.0,
     obstacle_inflation: float = 0.0,
+    cell_size: float = 1.0,
 ) -> PathResult:
     """
     Plan a path using Theta* (Any-Angle Pathfinding).
@@ -43,7 +44,8 @@ def astar_plan(
         elevation_map: Optional 2D elevation/height data for slope-aware planning
         elevation_weight: Weight for elevation changes (for Eco mode)
         obstacle_inflation: Radius to dilate obstacles (for Safe mode)
-        
+        cell_size: Horizontal grid spacing in meters (used for physical slope limits)
+
     Returns:
         PathResult containing the optimized path and metadata
     """
@@ -58,4 +60,5 @@ def astar_plan(
         distance_weight=distance_weight,
         elevation_weight=elevation_weight,
         obstacle_inflation=obstacle_inflation,
+        cell_size=cell_size,
     )

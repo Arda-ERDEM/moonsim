@@ -27,6 +27,13 @@ OBSTACLE_DILATION_ITERS = 1
 OBSTACLE_CLOSE_ITERS = 1
 OBSTACLE_BLOCK_THRESHOLD = 0.8  # cells with obstacle value > this are blocked
 
+# Hard mobility constraints (non-traversable, not just penalized)
+# These represent rover physics limits and are enforced for all modes.
+MAX_CLIMBABLE_SLOPE = 0.28
+HARD_SLOPE_THRESHOLD = 0.78
+HARD_PIT_DEPTH_THRESHOLD = 0.72
+HARD_CRATER_SIGNAL_THRESHOLD = 0.58
+
 CRATER_BOWL_SIGMA = 5.0    # Gaussian differential for bowl detection
 CRATER_DARK_PERCENTILE = 15 # Dark region threshold
 CONFIDENCE_CONTEXT_SIGMA = 2.0

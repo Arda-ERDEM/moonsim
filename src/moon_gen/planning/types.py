@@ -50,9 +50,15 @@ class LayerMap(TypedDict):
     """Container for computed terrain layers."""
     image: np.ndarray
     slope: np.ndarray
+    slope_grade: np.ndarray
+    pit_depth: np.ndarray
     roughness: np.ndarray
     obstacle: np.ndarray
     crater: np.ndarray
+    impassable_slope: np.ndarray
+    steep_block: np.ndarray
+    crater_block: np.ndarray
+    hard_block: np.ndarray
     confidence: np.ndarray
     uncertainty: np.ndarray
     obstacle_signal: np.ndarray
